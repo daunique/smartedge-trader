@@ -1,3 +1,4 @@
+cat > vite.config.js << 'EOF'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -8,12 +9,14 @@ export default defineConfig({
     host: true
   },
   preview: {
-    port: 10000,
-    host: '0.0.0.0'
+    port: process.env.PORT || 4173,
+    host: '0.0.0.0',
+    allowedHosts: 'all'
   },
   build: {
     outDir: 'dist',
     sourcemap: false,
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -24,3 +27,4 @@ export default defineConfig({
     }
   }
 })
+EOF
