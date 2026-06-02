@@ -1,6 +1,6 @@
 """
 SmartEdge Trader — FastAPI Backend
-Live Bybit integration via ccxt
+Bybit Demo Trading (mainnet demo account)
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,20 +17,31 @@ load_dotenv()
 
 # ── Exchange init ─────────────────────────────────────────────────
 def get_exchange():
+    account_mode = os.getenv("ACCOUNT_MODE", "DEMO").upper()
     config = {
         "apiKey": os.getenv("BYBIT_API_KEY", ""),
         "secret": os.getenv("BYBIT_API_SECRET", ""),
         "enableRateLimit": True,
-        "options": {"defaultType": "unified"},
+        "options": {
+            "defaultType": "unified",
+        },
     }
-    if os.getenv("BYBIT_TESTNET", "true").lower() == "true":
-        config["testnet"] = True
-    return ccxt.bybit(config)
+    # Bybit Demo Trading uses mainnet URL with a special header
+    if account_mode == "DEMO":
+        config["options"]["brokerId"] = ""
+        config["headers"] = {"Referer": "demo"}
+        # ccxt supports Bybit demo via this option
+        config["options"]["demo"] = True
+
+    exchange = ccxt.bybit(config)
+    return exchange
 
 # ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
+    print(f"   Mode: {os.getenv('ACCOUNT_MODE', 'DEMO')}")
+    print(f"   API Key set: {bool(os.getenv('BYBIT_API_KEY'))}")
     yield
     print("🛑 Shutting down...")
 
@@ -70,28 +81,46 @@ manager = ConnectionManager()
 # ── Routes ────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"app": "SmartEdge Trader", "status": "online", "docs": "/docs"}
+    return {
+        "app": "SmartEdge Trader",
+        "status": "online",
+        "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "docs": "/docs"
+    }
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat(), "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "1.0.0",
+        "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "api_key_set": bool(os.getenv("BYBIT_API_KEY")),
+    }
 
 @app.get("/api/portfolio")
 async def get_portfolio():
     exchange = get_exchange()
     try:
-        has_keys = bool(os.getenv("BYBIT_API_KEY"))
-        if not has_keys:
-            raise Exception("No API keys")
-
         balance = await exchange.fetch_balance()
+
+        # Unified account — USDT balance
         usdt = balance.get("USDT", {})
-        total = float(usdt.get("total", 0) or 0)
-        free  = float(usdt.get("free",  0) or 0)
-        used  = float(usdt.get("used",  0) or 0)
+        total = float(usdt.get("total") or 0)
+        free  = float(usdt.get("free")  or 0)
+        used  = float(usdt.get("used")  or 0)
+
+        # Try to get equity from info
+        info = balance.get("info", {})
+        result = info.get("result", {})
+        equity = 0
+        if isinstance(result, dict):
+            list_data = result.get("list", [])
+            if list_data:
+                equity = float(list_data[0].get("totalEquity") or total)
 
         return {
-            "balance": total,
+            "balance": equity or total,
             "free": free,
             "used": used,
             "daily_pnl": 0,
@@ -99,21 +128,17 @@ async def get_portfolio():
             "open_positions": 0,
             "trades_today": 0,
             "daily_loss_used_pct": 0,
-            "source": "bybit_live",
-            "testnet": os.getenv("BYBIT_TESTNET", "true"),
+            "source": "bybit_demo",
         }
     except Exception as e:
         print(f"[PORTFOLIO] Error: {e}")
         return {
-            "balance": 12480.50,
-            "free": 12480.50,
+            "balance": 0,
+            "free": 0,
             "used": 0,
-            "daily_pnl": 168.90,
-            "daily_pnl_pct": 1.37,
-            "open_positions": 0,
-            "trades_today": 0,
-            "daily_loss_used_pct": 0,
-            "source": "mock",
+            "daily_pnl": 0,
+            "daily_pnl_pct": 0,
+            "source": "error",
             "error": str(e),
         }
     finally:
@@ -123,21 +148,19 @@ async def get_portfolio():
 async def get_positions():
     exchange = get_exchange()
     try:
-        has_keys = bool(os.getenv("BYBIT_API_KEY"))
-        if not has_keys:
-            raise Exception("No API keys")
-
         raw = await exchange.fetch_positions()
         positions = []
         for p in raw:
             size = float(p.get("contracts") or 0)
             if size == 0:
                 continue
-            entry  = float(p.get("entryPrice") or 0)
-            current = float(p.get("markPrice") or entry)
-            side   = "LONG" if p.get("side") == "long" else "SHORT"
-            pnl    = float(p.get("unrealizedPnl") or 0)
-            pct    = (pnl / (entry * size)) * 100 if entry and size else 0
+            entry   = float(p.get("entryPrice") or 0)
+            current = float(p.get("markPrice")  or entry)
+            side    = "LONG" if p.get("side") == "long" else "SHORT"
+            pnl     = float(p.get("unrealizedPnl") or 0)
+            pct     = (pnl / (entry * size)) * 100 if entry and size else 0
+            risk    = abs(entry - float(p.get("stopLoss") or entry))
+            rr      = abs(pnl / (risk * size)) if risk and size else 0
 
             positions.append({
                 "id": p.get("id") or p.get("symbol"),
@@ -146,58 +169,53 @@ async def get_positions():
                 "entry": entry,
                 "current": current,
                 "tp": float(p.get("takeProfit") or 0),
-                "sl": float(p.get("stopLoss") or 0),
+                "sl": float(p.get("stopLoss")   or 0),
+                "be": entry,
                 "size": size,
                 "pnl": round(pnl, 2),
                 "pnlPct": round(pct, 2),
                 "status": "OPEN",
-                "rrAchieved": 0,
+                "rrAchieved": round(rr, 2),
                 "mlScore": 0,
                 "market": "crypto",
                 "openTime": p.get("timestamp") or datetime.utcnow().isoformat(),
             })
-        return {"positions": positions, "source": "bybit_live"}
+        return {"positions": positions, "source": "bybit_demo"}
     except Exception as e:
         print(f"[POSITIONS] Error: {e}")
-        return {"positions": [], "source": "mock", "error": str(e)}
+        return {"positions": [], "source": "error", "error": str(e)}
     finally:
         await exchange.close()
 
 @app.get("/api/signals")
 async def get_signals():
-    # Signals come from signal engine — returns empty until engine runs
     return {"signals": [], "source": "engine"}
 
 @app.get("/api/history")
-async def get_history(limit: int = 50, offset: int = 0):
+async def get_history(limit: int = 50):
     exchange = get_exchange()
     try:
-        has_keys = bool(os.getenv("BYBIT_API_KEY"))
-        if not has_keys:
-            raise Exception("No API keys")
-
-        orders = await exchange.fetch_closed_orders(limit=limit)
+        orders = await exchange.fetch_closed_orders(symbol=None, limit=limit)
         trades = []
         for o in orders:
-            if o.get("status") != "closed":
-                continue
+            pnl = float(o.get("profit") or 0)
             trades.append({
                 "id": o.get("id"),
                 "symbol": o.get("symbol", ""),
                 "direction": "LONG" if o.get("side") == "buy" else "SHORT",
-                "pnl": float(o.get("profit") or 0),
-                "status": "TP" if float(o.get("profit") or 0) > 0 else "SL",
+                "pnl": round(pnl, 2),
+                "runningPnl": 0,
+                "status": "TP" if pnl > 0 else "SL",
+                "rr": "0",
+                "mlScore": 0,
                 "date": o.get("datetime") or datetime.utcnow().isoformat(),
                 "market": "crypto",
                 "duration": "—",
-                "mlScore": 0,
-                "rr": "0",
-                "runningPnl": 0,
             })
-        return {"trades": trades, "total": len(trades), "source": "bybit_live"}
+        return {"trades": trades, "total": len(trades), "source": "bybit_demo"}
     except Exception as e:
         print(f"[HISTORY] Error: {e}")
-        return {"trades": [], "total": 0, "source": "mock", "error": str(e)}
+        return {"trades": [], "total": 0, "source": "error", "error": str(e)}
     finally:
         await exchange.close()
 
@@ -223,35 +241,34 @@ async def websocket_endpoint(websocket: WebSocket):
     print("INFO:     connection open")
     try:
         while True:
-            # Fetch live positions every 2s and broadcast
             exchange = get_exchange()
             try:
-                if os.getenv("BYBIT_API_KEY"):
-                    raw = await exchange.fetch_positions()
-                    positions = []
-                    for p in raw:
-                        size = float(p.get("contracts") or 0)
-                        if size == 0:
-                            continue
-                        positions.append({
-                            "id": p.get("id") or p.get("symbol"),
-                            "symbol": p.get("symbol", ""),
-                            "direction": "LONG" if p.get("side") == "long" else "SHORT",
-                            "entry": float(p.get("entryPrice") or 0),
-                            "current": float(p.get("markPrice") or 0),
-                            "pnl": float(p.get("unrealizedPnl") or 0),
-                            "status": "OPEN",
-                            "rrAchieved": 0,
-                            "mlScore": 0,
-                            "market": "crypto",
-                        })
-                    await manager.broadcast({
-                        "type": "position_update",
-                        "positions": positions,
-                        "timestamp": datetime.utcnow().isoformat(),
+                raw = await exchange.fetch_positions()
+                positions = []
+                for p in raw:
+                    size = float(p.get("contracts") or 0)
+                    if size == 0:
+                        continue
+                    pnl = float(p.get("unrealizedPnl") or 0)
+                    positions.append({
+                        "id": p.get("id") or p.get("symbol"),
+                        "symbol": p.get("symbol", ""),
+                        "direction": "LONG" if p.get("side") == "long" else "SHORT",
+                        "entry": float(p.get("entryPrice") or 0),
+                        "current": float(p.get("markPrice") or 0),
+                        "pnl": round(pnl, 2),
+                        "status": "OPEN",
+                        "rrAchieved": 0,
+                        "mlScore": 0,
+                        "market": "crypto",
                     })
+                await manager.broadcast({
+                    "type": "position_update",
+                    "positions": positions,
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
             except Exception as e:
-                print(f"[WS] Fetch error: {e}")
+                print(f"[WS] Error: {e}")
             finally:
                 await exchange.close()
 
