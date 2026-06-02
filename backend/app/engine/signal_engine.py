@@ -1,270 +1,397 @@
 """
-Signal Engine — VWAP + ORB + ML Filter
-Generates trade signals with confidence scores
+SmartEdge Trader — Live Signal Engine
+VWAP + ORB + ATR + ML Filter
+Runs on a background scheduler, pushes signals via WebSocket
 """
 
+import asyncio
+import httpx
 import numpy as np
-from datetime import datetime, time
-from dataclasses import dataclass
-from typing import Optional
 import uuid
+import os
+import hmac
+import hashlib
+import time
+import json
+from datetime import datetime, timezone
+from dataclasses import dataclass, field, asdict
+from typing import Optional
 
+DEMO_BASE  = "https://api-demo.bybit.com"
+API_KEY    = os.getenv("BYBIT_API_KEY", "")
+API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
+# ── Symbols to scan ───────────────────────────────────────────────
+CRYPTO_SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
+    "BNBUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
+]
+FOREX_SYMBOLS = []   # Bybit demo doesn't support forex CFDs
+ALL_SYMBOLS   = CRYPTO_SYMBOLS
+
+# ── Signal dataclass ──────────────────────────────────────────────
 @dataclass
 class Signal:
-    id: str
-    symbol: str
-    direction: str       # LONG | SHORT
-    entry: float
-    tp: float
-    sl: float
-    rr: float
-    ml_score: float
-    confidence: int
-    status: str          # ACTIVE | PENDING | WATCH | REJECTED
-    timeframe: str
-    market: str
-    vwap_above: bool
-    orb_break: bool
-    regime: str          # TRENDING | RANGING
-    timestamp: datetime
-    atr: float = 0.0
+    id:          str
+    symbol:      str
+    direction:   str      # LONG | SHORT
+    entry:       float
+    tp:          float
+    sl:          float
+    be:          float
+    rr:          str
+    ml_score:    float
+    confidence:  int
+    status:      str      # ACTIVE | PENDING | WATCH
+    timeframe:   str
+    market:      str
+    vwap_above:  bool
+    orb_break:   bool
+    regime:      str      # TRENDING | RANGING
+    atr:         float
+    timestamp:   str
+    expires_at:  str      # signals expire after 4 hours
 
 
-class OrbCalculator:
-    """Opening Range Breakout — marks first N-minute range"""
+# ── HTTP helper ───────────────────────────────────────────────────
+async def bybit_get(path: str, params: dict = {}) -> dict:
+    ts          = str(int(time.time() * 1000))
+    recv_window = "5000"
+    param_str   = ts + API_KEY + recv_window + "&".join(
+        f"{k}={v}" for k, v in sorted(params.items())
+    )
+    signature = hmac.new(
+        API_SECRET.encode(), param_str.encode(), hashlib.sha256
+    ).hexdigest()
+    headers = {
+        "X-BAPI-API-KEY":     API_KEY,
+        "X-BAPI-TIMESTAMP":   ts,
+        "X-BAPI-SIGN":        signature,
+        "X-BAPI-RECV-WINDOW": recv_window,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"{DEMO_BASE}{path}", params=params, headers=headers)
+        return r.json()
 
-    def __init__(self, minutes: int = 15):
-        self.minutes = minutes
-        self.orb_high: Optional[float] = None
-        self.orb_low: Optional[float] = None
-        self.formed = False
 
-    def update(self, candles: list[dict]) -> bool:
-        """Feed OHLCV candles. Returns True when ORB is formed."""
-        if self.formed:
-            return True
-        if len(candles) < 1:
-            return False
+async def bybit_public_get(path: str, params: dict = {}) -> dict:
+    """Public endpoint — no auth needed for market data"""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"https://api.bybit.com{path}", params=params)
+        return r.json()
 
-        highs = [c["high"] for c in candles]
-        lows = [c["low"] for c in candles]
-        self.orb_high = max(highs)
-        self.orb_low = min(lows)
-        self.formed = True
-        return True
 
-    def breakout(self, price: float) -> Optional[str]:
-        """Returns LONG | SHORT | None based on ORB break"""
-        if not self.formed:
-            return None
-        if price > self.orb_high:
-            return "LONG"
-        if price < self.orb_low:
-            return "SHORT"
+# ── OHLCV fetcher ─────────────────────────────────────────────────
+async def fetch_candles(symbol: str, interval: str = "15", limit: int = 100) -> list[dict]:
+    """Fetch OHLCV candles from Bybit public API"""
+    try:
+        data = await bybit_public_get("/v5/market/kline", {
+            "category": "linear",
+            "symbol":   symbol,
+            "interval": interval,
+            "limit":    str(limit),
+        })
+        if data.get("retCode") != 0:
+            return []
+        candles = []
+        for c in reversed(data["result"]["list"]):
+            candles.append({
+                "timestamp": int(c[0]),
+                "open":      float(c[1]),
+                "high":      float(c[2]),
+                "low":       float(c[3]),
+                "close":     float(c[4]),
+                "volume":    float(c[5]),
+            })
+        return candles
+    except Exception as e:
+        print(f"[CANDLES] {symbol} error: {e}")
+        return []
+
+
+# ── Technical Indicators ──────────────────────────────────────────
+def calc_vwap(candles: list[dict]) -> float:
+    """Session VWAP from available candles"""
+    cum_pv = 0.0
+    cum_v  = 0.0
+    for c in candles:
+        tp     = (c["high"] + c["low"] + c["close"]) / 3
+        cum_pv += tp * c["volume"]
+        cum_v  += c["volume"]
+    return cum_pv / cum_v if cum_v > 0 else 0
+
+
+def calc_atr(candles: list[dict], period: int = 14) -> float:
+    """Average True Range"""
+    if len(candles) < 2:
+        return 0
+    trs = []
+    for i in range(1, min(period + 1, len(candles))):
+        c  = candles[-i]
+        p  = candles[-i - 1]
+        tr = max(
+            c["high"] - c["low"],
+            abs(c["high"] - p["close"]),
+            abs(c["low"]  - p["close"]),
+        )
+        trs.append(tr)
+    return float(np.mean(trs)) if trs else 0
+
+
+def calc_orb(candles: list[dict], orb_candles: int = 1) -> tuple[float, float]:
+    """Opening Range High/Low from first N candles"""
+    if not candles:
+        return 0, 0
+    orb = candles[:orb_candles]
+    return max(c["high"] for c in orb), min(c["low"] for c in orb)
+
+
+def detect_regime(candles: list[dict]) -> str:
+    """TRENDING or RANGING based on directional vs total movement"""
+    if len(candles) < 10:
+        return "RANGING"
+    closes      = [c["close"] for c in candles]
+    highs       = [c["high"]  for c in candles]
+    lows        = [c["low"]   for c in candles]
+    price_move  = abs(closes[-1] - closes[0])
+    avg_range   = np.mean([h - l for h, l in zip(highs, lows)])
+    total_range = avg_range * len(candles)
+    ratio       = price_move / total_range if total_range > 0 else 0
+    return "TRENDING" if ratio > 0.25 else "RANGING"
+
+
+def ml_score(features: dict) -> float:
+    """
+    Weighted ML score (0–1).
+    Production: replace with loaded XGBoost model.
+    """
+    score = 0.0
+
+    # Volume confirmation (high vol = institutional interest)
+    vol_ratio = features.get("vol_ratio", 1.0)
+    score += min(vol_ratio / 2.5, 1.0) * 0.25
+
+    # ORB breakout confirmed
+    score += (1.0 if features.get("orb_break") else 0.2) * 0.20
+
+    # Trend regime
+    score += (0.9 if features.get("regime") == "TRENDING" else 0.3) * 0.20
+
+    # VWAP alignment
+    score += (1.0 if features.get("vwap_aligned") else 0.2) * 0.15
+
+    # ATR not too small (liquid market)
+    atr_pct = features.get("atr_pct", 0.5)
+    score += min(atr_pct / 1.0, 1.0) * 0.10
+
+    # Candle momentum
+    momentum = features.get("momentum", 0.5)
+    score += momentum * 0.10
+
+    return round(min(max(score, 0.0), 1.0), 3)
+
+
+def is_trading_window() -> bool:
+    """Only trade during high-liquidity windows (UTC)"""
+    now  = datetime.now(timezone.utc)
+    hour = now.hour
+
+    # London session:     08:00–11:00 UTC
+    # NY session:         13:30–16:30 UTC
+    # London/NY overlap:  13:30–16:30 UTC (best)
+    london = 8  <= hour < 11
+    ny     = 13 <= hour < 17
+    return london or ny
+
+
+# ── Signal Generator ──────────────────────────────────────────────
+async def scan_symbol(symbol: str, threshold: float = 0.65) -> Optional[Signal]:
+    """
+    Full signal scan pipeline for one symbol:
+    1. Fetch candles
+    2. Calculate VWAP, ATR, ORB
+    3. Check breakout + VWAP filter
+    4. ML score
+    5. Return Signal if passes threshold
+    """
+    candles = await fetch_candles(symbol, interval="15", limit=100)
+    if len(candles) < 20:
         return None
 
+    price  = candles[-1]["close"]
+    vwap   = calc_vwap(candles)
+    atr    = calc_atr(candles)
+    regime = detect_regime(candles)
 
-class VWAPCalculator:
-    """Volume Weighted Average Price"""
+    # ORB from first candle of current session
+    orb_high, orb_low = calc_orb(candles[-96:], orb_candles=1)
 
-    def __init__(self):
-        self.cumulative_pv = 0.0
-        self.cumulative_volume = 0.0
+    # Direction from ORB breakout
+    if price > orb_high * 1.0005:        # 0.05% buffer
+        direction = "LONG"
+        orb_break = True
+    elif price < orb_low * 0.9995:
+        direction = "SHORT"
+        orb_break = True
+    else:
+        return None                       # No breakout
 
-    def reset(self):
-        self.cumulative_pv = 0.0
-        self.cumulative_volume = 0.0
+    # VWAP filter
+    vwap_above = price > vwap
+    if direction == "LONG"  and not vwap_above: return None
+    if direction == "SHORT" and     vwap_above: return None
 
-    def update(self, high: float, low: float, close: float, volume: float) -> float:
-        typical_price = (high + low + close) / 3
-        self.cumulative_pv += typical_price * volume
-        self.cumulative_volume += volume
-        if self.cumulative_volume == 0:
-            return close
-        return self.cumulative_pv / self.cumulative_volume
+    # Skip ranging markets
+    if regime == "RANGING":
+        return None
 
-    def get_vwap(self) -> float:
-        if self.cumulative_volume == 0:
-            return 0
-        return self.cumulative_pv / self.cumulative_volume
+    # Calculate levels
+    if direction == "LONG":
+        sl  = price - (1.5 * atr)
+        tp  = price + (4.5 * atr)
+        be  = price + (1.5 * atr)
+    else:
+        sl  = price + (1.5 * atr)
+        tp  = price - (4.5 * atr)
+        be  = price - (1.5 * atr)
 
+    risk = abs(price - sl)
+    rr   = abs(tp - price) / risk if risk > 0 else 0
 
-class MLFilter:
-    """
-    XGBoost-based signal quality classifier
-    In production: loads a trained model from disk
-    Here: uses a weighted scoring heuristic as placeholder
-    """
+    # Skip if RR too low
+    if rr < 2.5:
+        return None
 
-    def __init__(self, threshold: float = 0.65):
-        self.threshold = threshold
+    # Volume momentum
+    recent_vol = np.mean([c["volume"] for c in candles[-5:]])
+    avg_vol    = np.mean([c["volume"] for c in candles[-20:]])
+    vol_ratio  = recent_vol / avg_vol if avg_vol > 0 else 1.0
 
-    def score(self, features: dict) -> float:
-        """
-        Features:
-          - gap_pct: pre-market gap %
-          - volume_ratio: current vol / 20-period avg vol
-          - atr_pct: ATR as % of price
-          - vwap_distance: % distance from VWAP
-          - orb_break: bool
-          - trend_strength: 0-1
-          - session_time: minutes since open
-          - prev_day_direction: 1 = bullish, -1 = bearish
-        """
-        score = 0.0
-        weights = {
-            "volume_ratio": 0.25,
-            "orb_break": 0.20,
-            "trend_strength": 0.20,
-            "vwap_distance": 0.15,
-            "gap_pct": 0.10,
-            "session_time": 0.10,
-        }
+    # Candle momentum (close position in candle body)
+    last   = candles[-1]
+    c_range = last["high"] - last["low"]
+    if c_range > 0:
+        momentum = (last["close"] - last["low"]) / c_range \
+            if direction == "LONG" \
+            else (last["high"] - last["close"]) / c_range
+    else:
+        momentum = 0.5
 
-        # Volume: high vol = strong signal
-        vol_ratio = features.get("volume_ratio", 1.0)
-        score += min(vol_ratio / 3.0, 1.0) * weights["volume_ratio"]
+    atr_pct = (atr / price) * 100 if price > 0 else 0
 
-        # ORB break confirmation
-        score += (1.0 if features.get("orb_break") else 0.3) * weights["orb_break"]
+    features = {
+        "vol_ratio":    vol_ratio,
+        "orb_break":    orb_break,
+        "regime":       regime,
+        "vwap_aligned": True,
+        "atr_pct":      atr_pct,
+        "momentum":     momentum,
+    }
 
-        # Trend strength
-        score += features.get("trend_strength", 0.5) * weights["trend_strength"]
+    score      = ml_score(features)
+    confidence = int(score * 100)
 
-        # VWAP distance (not too far, not too close)
-        dist = abs(features.get("vwap_distance", 0.5))
-        dist_score = 1.0 - abs(dist - 0.3) / 0.3
-        score += max(0, dist_score) * weights["vwap_distance"]
+    if score < threshold:
+        return None
 
-        # Gap confirms direction
-        gap = features.get("gap_pct", 0)
-        score += min(abs(gap) / 2.0, 1.0) * weights["gap_pct"]
+    # Status based on score
+    if score >= 0.78:
+        status = "ACTIVE"
+    elif score >= 0.65:
+        status = "PENDING"
+    else:
+        status = "WATCH"
 
-        # Session time: best 15–90 min after open
-        t = features.get("session_time", 30)
-        time_score = 1.0 if 15 <= t <= 90 else max(0, 1 - (t - 90) / 30)
-        score += time_score * weights["session_time"]
+    now        = datetime.now(timezone.utc)
+    expires_at = datetime.fromtimestamp(
+        now.timestamp() + 4 * 3600, tz=timezone.utc
+    ).isoformat()
 
-        return round(min(max(score, 0.0), 1.0), 3)
-
-    def passes(self, score: float) -> bool:
-        return score >= self.threshold
-
-
-class RegimeDetector:
-    """Classifies market regime: TRENDING or RANGING"""
-
-    def classify(self, candles: list[dict]) -> str:
-        if len(candles) < 10:
-            return "RANGING"
-        closes = [c["close"] for c in candles]
-        highs = [c["high"] for c in candles]
-        lows = [c["low"] for c in candles]
-
-        # ADX proxy: compare directional movement vs range
-        price_move = abs(closes[-1] - closes[0])
-        total_range = sum(h - l for h, l in zip(highs, lows)) / len(candles)
-
-        ratio = price_move / (total_range * len(candles)) if total_range > 0 else 0
-        return "TRENDING" if ratio > 0.3 else "RANGING"
+    return Signal(
+        id          = str(uuid.uuid4()),
+        symbol      = f"{symbol[:3]}/{symbol[3:]}",
+        direction   = direction,
+        entry       = round(price, 6),
+        tp          = round(tp, 6),
+        sl          = round(sl, 6),
+        be          = round(be, 6),
+        rr          = f"1:{rr:.1f}",
+        ml_score    = score,
+        confidence  = confidence,
+        status      = status,
+        timeframe   = "15M",
+        market      = "crypto",
+        vwap_above  = vwap_above,
+        orb_break   = orb_break,
+        regime      = regime,
+        atr         = round(atr, 6),
+        timestamp   = now.isoformat(),
+        expires_at  = expires_at,
+    )
 
 
+# ── Signal Manager ────────────────────────────────────────────────
 class SignalEngine:
-    def __init__(self, settings: dict = None):
-        self.settings = settings or {"orb_timeframe": 15, "ml_threshold": 0.65}
-        self.orb = OrbCalculator(self.settings["orb_timeframe"])
-        self.vwap = VWAPCalculator()
-        self.ml = MLFilter(self.settings["ml_threshold"])
-        self.regime = RegimeDetector()
-        self._active_signals: list[Signal] = []
+    def __init__(self):
+        self.signals:   list[Signal] = []
+        self.threshold: float        = float(os.getenv("ML_THRESHOLD", "0.65"))
+        self.running:   bool         = False
+        self.broadcast_cb            = None   # set by main.py
 
-    def process_candle(self, symbol: str, candle: dict, history: list[dict]) -> Optional[Signal]:
-        """
-        Main processing loop per candle tick.
-        Returns a Signal if conditions are met, else None.
-        """
-        price = candle["close"]
-        vwap = self.vwap.update(candle["high"], candle["low"], candle["close"], candle["volume"])
-        atr = self._calc_atr(history)
-        regime = self.regime.classify(history)
+    def set_broadcast(self, cb):
+        self.broadcast_cb = cb
 
-        # Skip ranging markets (ORB less reliable)
-        if regime == "RANGING":
-            return None
+    def get_active(self) -> list[dict]:
+        now = datetime.now(timezone.utc).isoformat()
+        # Remove expired signals
+        self.signals = [
+            s for s in self.signals
+            if s.expires_at > now
+        ]
+        return [asdict(s) for s in self.signals]
 
-        # Check ORB
-        orb_direction = self.orb.breakout(price)
-        if not orb_direction:
-            return None
-
-        # VWAP filter: only long above VWAP, short below
-        vwap_above = price > vwap
-        if orb_direction == "LONG" and not vwap_above:
-            return None
-        if orb_direction == "SHORT" and vwap_above:
-            return None
-
-        # Calculate levels
-        sl = price - (1.5 * atr) if orb_direction == "LONG" else price + (1.5 * atr)
-        tp = price + (4.5 * atr) if orb_direction == "LONG" else price - (4.5 * atr)
-        rr = round(abs(tp - price) / abs(price - sl), 2) if abs(price - sl) > 0 else 0
-
-        # ML score
-        features = {
-            "volume_ratio": candle["volume"] / max(np.mean([c["volume"] for c in history[-20:]]), 1),
-            "orb_break": True,
-            "trend_strength": 0.7 if regime == "TRENDING" else 0.3,
-            "vwap_distance": abs(price - vwap) / vwap if vwap > 0 else 0,
-            "gap_pct": 0,
-            "session_time": 30,
-        }
-        ml_score = self.ml.score(features)
-
-        if not self.ml.passes(ml_score):
-            return None
-
-        signal = Signal(
-            id=str(uuid.uuid4()),
-            symbol=symbol,
-            direction=orb_direction,
-            entry=price,
-            tp=round(tp, 6),
-            sl=round(sl, 6),
-            rr=rr,
-            ml_score=ml_score,
-            confidence=int(ml_score * 100),
-            status="ACTIVE",
-            timeframe=f"{self.settings['orb_timeframe']}M",
-            market="crypto",
-            vwap_above=vwap_above,
-            orb_break=True,
-            regime=regime,
-            timestamp=datetime.utcnow(),
-            atr=atr,
+    async def scan_all(self):
+        """Scan all symbols and update signal list"""
+        print(f"[ENGINE] Scanning {len(ALL_SYMBOLS)} symbols...")
+        results = await asyncio.gather(
+            *[scan_symbol(sym, self.threshold) for sym in ALL_SYMBOLS],
+            return_exceptions=True
         )
-        self._active_signals.append(signal)
-        return signal
+        new_signals = []
+        for r in results:
+            if isinstance(r, Signal):
+                new_signals.append(r)
 
-    def _calc_atr(self, candles: list[dict], period: int = 14) -> float:
-        if len(candles) < 2:
-            return 0.01
-        trs = []
-        for i in range(1, min(period + 1, len(candles))):
-            c = candles[-i]
-            p = candles[-i - 1]
-            tr = max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"]))
-            trs.append(tr)
-        return float(np.mean(trs)) if trs else 0.01
+        # Merge: keep existing signals not in new scan, add new ones
+        existing_symbols = {s.symbol for s in new_signals}
+        kept = [s for s in self.signals if s.symbol not in existing_symbols]
+        self.signals = kept + new_signals
 
-    def is_trading_hours(self) -> bool:
-        """Only trade first 2 hours of NY session (14:30–16:30 UTC) + London overlap"""
-        now = datetime.utcnow().time()
-        ny_open = time(14, 30)
-        ny_window = time(16, 30)
-        london_open = time(8, 0)
-        london_close = time(10, 30)
-        return (ny_open <= now <= ny_window) or (london_open <= now <= london_close)
+        print(f"[ENGINE] {len(new_signals)} new signals | {len(self.signals)} total active")
 
-    def get_active_signals(self) -> list:
-        return [vars(s) for s in self._active_signals if s.status == "ACTIVE"]
+        # Broadcast to WebSocket clients
+        if self.broadcast_cb and new_signals:
+            await self.broadcast_cb({
+                "type":    "signal_update",
+                "signals": [asdict(s) for s in self.signals],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+    async def run(self):
+        """Background loop — scans every 15 minutes"""
+        self.running = True
+        print("[ENGINE] Signal engine started")
+        while self.running:
+            try:
+                await self.scan_all()
+            except Exception as e:
+                print(f"[ENGINE] Scan error: {e}")
+            # Wait 15 minutes between full scans
+            await asyncio.sleep(900)
+
+    def stop(self):
+        self.running = False
+
+
+# Global instance
+signal_engine = SignalEngine()

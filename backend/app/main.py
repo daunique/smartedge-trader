@@ -1,6 +1,6 @@
 """
 SmartEdge Trader — FastAPI Backend
-Bybit Demo Trading via direct V5 API calls
+Live Bybit Demo + Signal Engine
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,29 +10,31 @@ import asyncio, json, os, hmac, hashlib, time
 import httpx
 from datetime import datetime
 from dotenv import load_dotenv
+from app.engine.signal_engine import signal_engine
 
 load_dotenv()
 
-DEMO_BASE = "https://api-demo.bybit.com"
+DEMO_BASE  = "https://api-demo.bybit.com"
 API_KEY    = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
-# ── Bybit V5 signed request ───────────────────────────────────────
-def sign(params: dict) -> dict:
-    ts        = str(int(time.time() * 1000))
+# ── Signed request ────────────────────────────────────────────────
+def sign_headers(params: dict) -> dict:
+    ts          = str(int(time.time() * 1000))
     recv_window = "5000"
-    param_str = ts + API_KEY + recv_window + "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-    signature = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    param_str   = ts + API_KEY + recv_window + "&".join(
+        f"{k}={v}" for k, v in sorted(params.items())
+    )
+    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     return {
         "X-BAPI-API-KEY":     API_KEY,
         "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        signature,
+        "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
-        "Content-Type":       "application/json",
     }
 
 async def bybit_get(path: str, params: dict = {}) -> dict:
-    headers = sign(params)
+    headers = sign_headers(params)
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(f"{DEMO_BASE}{path}", params=params, headers=headers)
         return r.json()
@@ -42,11 +44,11 @@ async def bybit_post(path: str, body: dict = {}) -> dict:
     recv_window = "5000"
     body_str    = json.dumps(body)
     param_str   = ts + API_KEY + recv_window + body_str
-    signature   = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     headers = {
         "X-BAPI-API-KEY":     API_KEY,
         "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        signature,
+        "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
         "Content-Type":       "application/json",
     }
@@ -54,34 +56,48 @@ async def bybit_post(path: str, body: dict = {}) -> dict:
         r = await client.post(f"{DEMO_BASE}{path}", content=body_str, headers=headers)
         return r.json()
 
-# ── Lifespan ──────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("🚀 SmartEdge Trader backend starting...")
-    print(f"   Mode: {os.getenv('ACCOUNT_MODE', 'DEMO')}")
-    print(f"   API Key set: {bool(API_KEY)}")
-    print(f"   Endpoint: {DEMO_BASE}")
-    yield
-    print("🛑 Shutting down...")
-
-app = FastAPI(title="SmartEdge Trader API", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
-
 # ── WebSocket Manager ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self): self.active: list[WebSocket] = []
+
     async def connect(self, ws):
-        await ws.accept(); self.active.append(ws)
+        await ws.accept()
+        self.active.append(ws)
+
     def disconnect(self, ws):
         if ws in self.active: self.active.remove(ws)
-    async def broadcast(self, data):
+
+    async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
         for ws in self.active[:]:
             try: await ws.send_text(msg)
             except: self.active.remove(ws)
 
 manager = ConnectionManager()
+
+# ── Lifespan — start signal engine ───────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 SmartEdge Trader backend starting...")
+    print(f"   Mode:        {os.getenv('ACCOUNT_MODE', 'DEMO')}")
+    print(f"   API Key set: {bool(API_KEY)}")
+    print(f"   Endpoint:    {DEMO_BASE}")
+
+    # Wire broadcast callback to WebSocket manager
+    signal_engine.set_broadcast(manager.broadcast)
+
+    # Start signal engine in background
+    asyncio.create_task(signal_engine.run())
+    print("   Signal engine: started ✅")
+
+    yield
+
+    signal_engine.stop()
+    print("🛑 Shutting down...")
+
+app = FastAPI(title="SmartEdge Trader API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
 
 # ── Routes ────────────────────────────────────────────────────────
 @app.get("/")
@@ -91,23 +107,28 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.0.0", "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
-            "api_key_set": bool(API_KEY), "endpoint": DEMO_BASE}
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "1.0.0",
+        "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "api_key_set": bool(API_KEY),
+        "endpoint": DEMO_BASE,
+        "signals_active": len(signal_engine.get_active()),
+    }
 
 @app.get("/api/portfolio")
 async def get_portfolio():
     try:
         data = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
         if data.get("retCode") != 0:
-            raise Exception(data.get("retMsg", "Unknown error"))
+            raise Exception(data.get("retMsg"))
         lst    = data["result"]["list"]
         acc    = lst[0] if lst else {}
         equity = float(acc.get("totalEquity") or 0)
         free   = float(acc.get("totalAvailableBalance") or 0)
-        used   = equity - free
 
-        # Daily PnL
+        # Daily PnL from transaction log
         pnl_data = await bybit_get("/v5/account/transaction-log",
                                    {"accountType": "UNIFIED", "limit": "50"})
         daily_pnl = 0
@@ -121,11 +142,15 @@ async def get_portfolio():
                     daily_pnl += float(tx.get("cashFlow") or 0)
 
         return {
-            "balance": equity, "free": free, "used": used,
+            "balance": equity,
+            "free": free,
+            "used": equity - free,
             "daily_pnl": round(daily_pnl, 2),
             "daily_pnl_pct": round((daily_pnl / equity * 100) if equity else 0, 2),
-            "open_positions": 0, "trades_today": 0,
-            "daily_loss_used_pct": 0, "source": "bybit_demo",
+            "open_positions": 0,
+            "trades_today": 0,
+            "daily_loss_used_pct": 0,
+            "source": "bybit_demo",
         }
     except Exception as e:
         print(f"[PORTFOLIO] Error: {e}")
@@ -143,8 +168,8 @@ async def get_positions():
         for p in data["result"].get("list", []):
             size = float(p.get("size") or 0)
             if size == 0: continue
-            entry   = float(p.get("avgPrice")   or 0)
-            current = float(p.get("markPrice")  or entry)
+            entry   = float(p.get("avgPrice")      or 0)
+            current = float(p.get("markPrice")     or entry)
             pnl     = float(p.get("unrealisedPnl") or 0)
             pct     = (pnl / (entry * size)) * 100 if entry and size else 0
             side    = "LONG" if p.get("side") == "Buy" else "SHORT"
@@ -152,18 +177,14 @@ async def get_positions():
                 "id":        p.get("positionIdx") or p.get("symbol"),
                 "symbol":    p.get("symbol", ""),
                 "direction": side,
-                "entry":     entry,
-                "current":   current,
+                "entry":     entry, "current": current,
                 "tp":        float(p.get("takeProfit") or 0),
                 "sl":        float(p.get("stopLoss")   or 0),
-                "be":        entry,
-                "size":      size,
+                "be":        entry, "size": size,
                 "pnl":       round(pnl, 2),
                 "pnlPct":    round(pct, 2),
-                "status":    "OPEN",
-                "rrAchieved": 0,
-                "mlScore":   0,
-                "market":    "crypto",
+                "status":    "OPEN", "rrAchieved": 0,
+                "mlScore":   0, "market": "crypto",
                 "openTime":  p.get("createdTime") or datetime.utcnow().isoformat(),
             })
         return {"positions": positions, "source": "bybit_demo"}
@@ -173,7 +194,11 @@ async def get_positions():
 
 @app.get("/api/signals")
 async def get_signals():
-    return {"signals": [], "source": "engine"}
+    return {
+        "signals": signal_engine.get_active(),
+        "source":  "engine",
+        "count":   len(signal_engine.get_active()),
+    }
 
 @app.get("/api/history")
 async def get_history(limit: int = 50):
@@ -183,20 +208,20 @@ async def get_history(limit: int = 50):
         if data.get("retCode") != 0:
             raise Exception(data.get("retMsg"))
         trades = []
-        running = 0
+        running = 0.0
         for o in data["result"].get("list", []):
             pnl = float(o.get("cumExecFee") or 0) * -1
             running += pnl
             trades.append({
-                "id":        o.get("orderId"),
-                "symbol":    o.get("symbol", ""),
-                "direction": "LONG" if o.get("side") == "Buy" else "SHORT",
-                "pnl":       round(pnl, 2),
+                "id":         o.get("orderId"),
+                "symbol":     o.get("symbol", ""),
+                "direction":  "LONG" if o.get("side") == "Buy" else "SHORT",
+                "pnl":        round(pnl, 2),
                 "runningPnl": round(running, 2),
-                "status":    "TP" if pnl >= 0 else "SL",
-                "rr":        "0", "mlScore": 0,
-                "date":      o.get("createdTime") or datetime.utcnow().isoformat(),
-                "market":    "crypto", "duration": "—",
+                "status":     "TP" if pnl >= 0 else "SL",
+                "rr": "0", "mlScore": 0,
+                "date":       o.get("createdTime") or datetime.utcnow().isoformat(),
+                "market":     "crypto", "duration": "—",
             })
         return {"trades": trades, "total": len(trades), "source": "bybit_demo"}
     except Exception as e:
@@ -205,7 +230,33 @@ async def get_history(limit: int = 50):
 
 @app.post("/api/settings")
 async def update_settings(settings: dict):
+    # Update signal engine threshold if provided
+    if "mlThreshold" in settings:
+        signal_engine.threshold = float(settings["mlThreshold"])
     return {"success": True, "settings": settings}
+
+@app.post("/api/execute/{signal_id}")
+async def execute_signal(signal_id: str):
+    """Execute a signal — place order on Bybit demo"""
+    sig = next((s for s in signal_engine.signals if s.id == signal_id), None)
+    if not sig:
+        return {"success": False, "error": "Signal not found"}
+    try:
+        body = {
+            "category":    "linear",
+            "symbol":      sig.symbol.replace("/", ""),
+            "side":        "Buy" if sig.direction == "LONG" else "Sell",
+            "orderType":   "Market",
+            "qty":         "0.01",   # minimum size — user adjusts in settings
+            "takeProfit":  str(sig.tp),
+            "stopLoss":    str(sig.sl),
+            "tpTriggerBy": "MarkPrice",
+            "slTriggerBy": "MarkPrice",
+        }
+        result = await bybit_post("/v5/order/create", body)
+        return {"success": result.get("retCode") == 0, "result": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.post("/api/positions/{position_id}/close")
 async def close_position(position_id: str, reason: str = "manual"):
@@ -221,9 +272,20 @@ async def close_position(position_id: str, reason: str = "manual"):
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     print("INFO:     connection open")
+
+    # Send current signals immediately on connect
+    try:
+        await websocket.send_text(json.dumps({
+            "type":    "signal_update",
+            "signals": signal_engine.get_active(),
+            "timestamp": datetime.utcnow().isoformat(),
+        }))
+    except: pass
+
     try:
         while True:
             try:
+                # Fetch positions every 2s
                 data = await bybit_get("/v5/position/list",
                                        {"category": "linear", "settleCoin": "USDT"})
                 positions = []
@@ -238,11 +300,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             "entry":     float(p.get("avgPrice")      or 0),
                             "current":   float(p.get("markPrice")     or 0),
                             "pnl":       round(float(p.get("unrealisedPnl") or 0), 2),
+                            "tp":        float(p.get("takeProfit") or 0),
+                            "sl":        float(p.get("stopLoss")   or 0),
                             "status":    "OPEN", "rrAchieved": 0,
                             "mlScore":   0, "market": "crypto",
                         })
                 await manager.broadcast({
-                    "type": "position_update",
+                    "type":      "position_update",
                     "positions": positions,
                     "timestamp": datetime.utcnow().isoformat(),
                 })
