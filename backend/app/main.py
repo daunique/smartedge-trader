@@ -1,6 +1,6 @@
 """
 SmartEdge Trader — FastAPI Backend
-Bybit Demo Trading (mainnet demo account)
+Bybit Demo Trading using direct API URL
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,7 +17,6 @@ load_dotenv()
 
 # ── Exchange init ─────────────────────────────────────────────────
 def get_exchange():
-    account_mode = os.getenv("ACCOUNT_MODE", "DEMO").upper()
     config = {
         "apiKey": os.getenv("BYBIT_API_KEY", ""),
         "secret": os.getenv("BYBIT_API_SECRET", ""),
@@ -25,16 +24,15 @@ def get_exchange():
         "options": {
             "defaultType": "unified",
         },
+        # Bybit Demo Trading uses this specific URL
+        "urls": {
+            "api": {
+                "public":  "https://api-demo.bybit.com",
+                "private": "https://api-demo.bybit.com",
+            }
+        }
     }
-    # Bybit Demo Trading uses mainnet URL with a special header
-    if account_mode == "DEMO":
-        config["options"]["brokerId"] = ""
-        config["headers"] = {"Referer": "demo"}
-        # ccxt supports Bybit demo via this option
-        config["options"]["demo"] = True
-
-    exchange = ccxt.bybit(config)
-    return exchange
+    return ccxt.bybit(config)
 
 # ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
@@ -42,6 +40,7 @@ async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
     print(f"   Mode: {os.getenv('ACCOUNT_MODE', 'DEMO')}")
     print(f"   API Key set: {bool(os.getenv('BYBIT_API_KEY'))}")
+    print(f"   Demo URL: api-demo.bybit.com")
     yield
     print("🛑 Shutting down...")
 
@@ -85,6 +84,7 @@ async def root():
         "app": "SmartEdge Trader",
         "status": "online",
         "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "endpoint": "api-demo.bybit.com",
         "docs": "/docs"
     }
 
@@ -96,6 +96,7 @@ async def health():
         "version": "1.0.0",
         "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
         "api_key_set": bool(os.getenv("BYBIT_API_KEY")),
+        "endpoint": "api-demo.bybit.com",
     }
 
 @app.get("/api/portfolio")
@@ -103,24 +104,22 @@ async def get_portfolio():
     exchange = get_exchange()
     try:
         balance = await exchange.fetch_balance()
-
-        # Unified account — USDT balance
-        usdt = balance.get("USDT", {})
+        usdt  = balance.get("USDT", {})
         total = float(usdt.get("total") or 0)
         free  = float(usdt.get("free")  or 0)
         used  = float(usdt.get("used")  or 0)
 
-        # Try to get equity from info
-        info = balance.get("info", {})
-        result = info.get("result", {})
-        equity = 0
+        # Try equity from unified account info
+        info      = balance.get("info", {})
+        result    = info.get("result", {})
+        equity    = total
         if isinstance(result, dict):
-            list_data = result.get("list", [])
-            if list_data:
-                equity = float(list_data[0].get("totalEquity") or total)
+            lst = result.get("list", [])
+            if lst:
+                equity = float(lst[0].get("totalEquity") or total)
 
         return {
-            "balance": equity or total,
+            "balance": equity,
             "free": free,
             "used": used,
             "daily_pnl": 0,
@@ -133,13 +132,9 @@ async def get_portfolio():
     except Exception as e:
         print(f"[PORTFOLIO] Error: {e}")
         return {
-            "balance": 0,
-            "free": 0,
-            "used": 0,
-            "daily_pnl": 0,
-            "daily_pnl_pct": 0,
-            "source": "error",
-            "error": str(e),
+            "balance": 0, "free": 0, "used": 0,
+            "daily_pnl": 0, "daily_pnl_pct": 0,
+            "source": "error", "error": str(e),
         }
     finally:
         await exchange.close()
@@ -159,8 +154,6 @@ async def get_positions():
             side    = "LONG" if p.get("side") == "long" else "SHORT"
             pnl     = float(p.get("unrealizedPnl") or 0)
             pct     = (pnl / (entry * size)) * 100 if entry and size else 0
-            risk    = abs(entry - float(p.get("stopLoss") or entry))
-            rr      = abs(pnl / (risk * size)) if risk and size else 0
 
             positions.append({
                 "id": p.get("id") or p.get("symbol"),
@@ -175,7 +168,7 @@ async def get_positions():
                 "pnl": round(pnl, 2),
                 "pnlPct": round(pct, 2),
                 "status": "OPEN",
-                "rrAchieved": round(rr, 2),
+                "rrAchieved": 0,
                 "mlScore": 0,
                 "market": "crypto",
                 "openTime": p.get("timestamp") or datetime.utcnow().isoformat(),
@@ -206,8 +199,7 @@ async def get_history(limit: int = 50):
                 "pnl": round(pnl, 2),
                 "runningPnl": 0,
                 "status": "TP" if pnl > 0 else "SL",
-                "rr": "0",
-                "mlScore": 0,
+                "rr": "0", "mlScore": 0,
                 "date": o.get("datetime") or datetime.utcnow().isoformat(),
                 "market": "crypto",
                 "duration": "—",
@@ -249,14 +241,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     size = float(p.get("contracts") or 0)
                     if size == 0:
                         continue
-                    pnl = float(p.get("unrealizedPnl") or 0)
                     positions.append({
                         "id": p.get("id") or p.get("symbol"),
                         "symbol": p.get("symbol", ""),
                         "direction": "LONG" if p.get("side") == "long" else "SHORT",
                         "entry": float(p.get("entryPrice") or 0),
                         "current": float(p.get("markPrice") or 0),
-                        "pnl": round(pnl, 2),
+                        "pnl": round(float(p.get("unrealizedPnl") or 0), 2),
                         "status": "OPEN",
                         "rrAchieved": 0,
                         "mlScore": 0,
@@ -271,7 +262,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"[WS] Error: {e}")
             finally:
                 await exchange.close()
-
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
