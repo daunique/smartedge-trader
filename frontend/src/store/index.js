@@ -80,17 +80,27 @@ const generateHistory = () => {
 
 export const useStore = create((set, get) => ({
   // Mode
-  executionMode: 'SEMI-AUTO', // MANUAL | SEMI-AUTO | FULL-AUTO
+  executionMode: 'SEMI-AUTO',
   setExecutionMode: (mode) => set({ executionMode: mode }),
 
   // Exchange
   activeExchange: 'bybit',
-  accountMode: 'DEMO', // DEMO | LIVE
+  accountMode: 'DEMO',
   setAccountMode: (mode) => set({ accountMode: mode }),
   setActiveExchange: (ex) => set({ activeExchange: ex }),
 
+  // Connection status
+  backendConnected: false,
+  wsConnected: false,
+  setBackendConnected: (v) => set({ backendConnected: v }),
+  setWsConnected: (v) => set({ wsConnected: v }),
+
+  // Live prices { BTCUSDT: { price, change, volume } }
+  livePrices: {},
+  updateLivePrices: (prices) => set({ livePrices: prices }),
+
   // Market filter
-  marketFilter: 'ALL', // ALL | CRYPTO | FOREX
+  marketFilter: 'ALL',
   setMarketFilter: (f) => set({ marketFilter: f }),
 
   // Navigation
@@ -107,15 +117,17 @@ export const useStore = create((set, get) => ({
 
   // Positions
   positions: initialPositions,
+  refreshPositions: (positions) => set({ positions }),
   updatePosition: (id, updates) => set(state => ({
     positions: state.positions.map(p => p.id === id ? { ...p, ...updates } : p)
   })),
-  closePosition: (id, reason) => set(state => ({
+  closePosition: (id) => set(state => ({
     positions: state.positions.filter(p => p.id !== id)
   })),
 
   // Signals
   signals: generateSignals(),
+  refreshSignals: (signals) => set({ signals }),
   dismissSignal: (id) => set(state => ({
     signals: state.signals.filter(s => s.id !== id)
   })),
@@ -154,4 +166,13 @@ export const useStore = create((set, get) => ({
   currentStreak: 4,
   maxDrawdown: 3.2,
   sharpeRatio: 2.18,
+
+  // Refresh from live API
+  refreshPortfolio: (data) => set({
+    portfolioBalance: data.balance ?? get().portfolioBalance,
+    dailyPnl: data.daily_pnl ?? get().dailyPnl,
+    dailyPnlPct: data.daily_pnl_pct ?? get().dailyPnlPct,
+    winRate: data.win_rate ?? get().winRate,
+    avgRR: data.avg_rr ?? get().avgRR,
+  }),
 }))

@@ -10,11 +10,7 @@ export default defineConfig({
   preview: {
     port: process.env.PORT || 4173,
     host: '0.0.0.0',
-    allowedHosts: [
-      'smartedge-trader-oracle.onrender.com',
-      'localhost',
-      '.onrender.com'
-    ]
+    allowedHosts: 'all'
   },
   build: {
     outDir: 'dist',
