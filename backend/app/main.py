@@ -1,9 +1,9 @@
 """
 SmartEdge Trader — FastAPI Backend
-Live Bybit Demo + Signal Engine
+Full autonomous trading: signals + auto-execution + BE monitor
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio, json, os, hmac, hashlib, time
@@ -11,6 +11,7 @@ import httpx
 from datetime import datetime
 from dotenv import load_dotenv
 from app.engine.signal_engine import signal_engine
+from app.engine.auto_executor import auto_executor
 
 load_dotenv()
 
@@ -18,7 +19,6 @@ DEMO_BASE  = "https://api-demo.bybit.com"
 API_KEY    = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
-# ── Signed request ────────────────────────────────────────────────
 def sign_headers(params: dict) -> dict:
     ts          = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -59,14 +59,10 @@ async def bybit_post(path: str, body: dict = {}) -> dict:
 # ── WebSocket Manager ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self): self.active: list[WebSocket] = []
-
     async def connect(self, ws):
-        await ws.accept()
-        self.active.append(ws)
-
+        await ws.accept(); self.active.append(ws)
     def disconnect(self, ws):
         if ws in self.active: self.active.remove(ws)
-
     async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
         for ws in self.active[:]:
@@ -75,7 +71,42 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ── Lifespan — start signal engine ───────────────────────────────
+# ── Full-Auto signal watcher ──────────────────────────────────────
+async def full_auto_watcher():
+    """
+    When mode = FULL-AUTO, auto-execute every new ACTIVE signal
+    that passes safety checks
+    """
+    print("[AUTO] Full-auto watcher started")
+    while True:
+        try:
+            if auto_executor.mode == "FULL-AUTO" and not auto_executor.paused:
+                signals = signal_engine.get_active()
+                for sig in signals:
+                    if (sig.get("status") == "ACTIVE"
+                            and sig.get("id") not in auto_executor.executed_ids):
+                        print(f"[AUTO] Full-auto executing: {sig['symbol']} {sig['direction']}")
+                        result = await auto_executor.execute_signal(sig)
+                        if result.get("success"):
+                            await manager.broadcast({
+                                "type":   "auto_executed",
+                                "result": result,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+        except Exception as e:
+            print(f"[AUTO] Watcher error: {e}")
+        await asyncio.sleep(10)
+
+# ── Daily reset at midnight UTC ───────────────────────────────────
+async def daily_reset():
+    while True:
+        now = datetime.utcnow()
+        secs_to_midnight = (24 * 3600) - (now.hour * 3600 + now.minute * 60 + now.second)
+        await asyncio.sleep(secs_to_midnight)
+        auto_executor.reset_daily()
+        print("[RESET] Daily counters reset")
+
+# ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
@@ -83,16 +114,20 @@ async def lifespan(app: FastAPI):
     print(f"   API Key set: {bool(API_KEY)}")
     print(f"   Endpoint:    {DEMO_BASE}")
 
-    # Wire broadcast callback to WebSocket manager
     signal_engine.set_broadcast(manager.broadcast)
+    auto_executor.set_broadcast(manager.broadcast)
 
-    # Start signal engine in background
     asyncio.create_task(signal_engine.run())
-    print("   Signal engine: started ✅")
+    asyncio.create_task(auto_executor.run_be_monitor())
+    asyncio.create_task(full_auto_watcher())
+    asyncio.create_task(daily_reset())
 
+    print("   Signal engine:   started ✅")
+    print("   Auto executor:   started ✅")
+    print("   BE monitor:      started ✅")
     yield
-
     signal_engine.stop()
+    auto_executor.stop()
     print("🛑 Shutting down...")
 
 app = FastAPI(title="SmartEdge Trader API", version="1.0.0", lifespan=lifespan)
@@ -103,7 +138,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
 @app.get("/")
 async def root():
     return {"app": "SmartEdge Trader", "status": "online",
-            "mode": os.getenv("ACCOUNT_MODE", "DEMO"), "docs": "/docs"}
+            "mode": auto_executor.mode, "docs": "/docs"}
 
 @app.get("/health")
 async def health():
@@ -111,26 +146,26 @@ async def health():
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0",
-        "mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "execution_mode": auto_executor.mode,
+        "paused": auto_executor.paused,
         "api_key_set": bool(API_KEY),
-        "endpoint": DEMO_BASE,
         "signals_active": len(signal_engine.get_active()),
+        "trades_today": auto_executor.trades_today,
+        "endpoint": DEMO_BASE,
     }
 
 @app.get("/api/portfolio")
 async def get_portfolio():
     try:
-        data = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
-        if data.get("retCode") != 0:
-            raise Exception(data.get("retMsg"))
+        data   = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+        if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
         lst    = data["result"]["list"]
         acc    = lst[0] if lst else {}
         equity = float(acc.get("totalEquity") or 0)
         free   = float(acc.get("totalAvailableBalance") or 0)
 
-        # Daily PnL from transaction log
-        pnl_data = await bybit_get("/v5/account/transaction-log",
-                                   {"accountType": "UNIFIED", "limit": "50"})
+        pnl_data  = await bybit_get("/v5/account/transaction-log",
+                                    {"accountType": "UNIFIED", "limit": "50"})
         daily_pnl = 0
         if pnl_data.get("retCode") == 0:
             today = datetime.utcnow().date().isoformat()
@@ -142,18 +177,18 @@ async def get_portfolio():
                     daily_pnl += float(tx.get("cashFlow") or 0)
 
         return {
-            "balance": equity,
-            "free": free,
-            "used": equity - free,
-            "daily_pnl": round(daily_pnl, 2),
-            "daily_pnl_pct": round((daily_pnl / equity * 100) if equity else 0, 2),
-            "open_positions": 0,
-            "trades_today": 0,
-            "daily_loss_used_pct": 0,
+            "balance":              equity,
+            "free":                 free,
+            "used":                 equity - free,
+            "daily_pnl":           round(daily_pnl, 2),
+            "daily_pnl_pct":       round((daily_pnl/equity*100) if equity else 0, 2),
+            "open_positions":       0,
+            "trades_today":         auto_executor.trades_today,
+            "daily_loss_used_pct":  round((auto_executor.daily_loss/equity*100) if equity else 0, 2),
             "source": "bybit_demo",
         }
     except Exception as e:
-        print(f"[PORTFOLIO] Error: {e}")
+        print(f"[PORTFOLIO] {e}")
         return {"balance": 0, "free": 0, "used": 0, "daily_pnl": 0,
                 "daily_pnl_pct": 0, "source": "error", "error": str(e)}
 
@@ -162,8 +197,7 @@ async def get_positions():
     try:
         data = await bybit_get("/v5/position/list",
                                {"category": "linear", "settleCoin": "USDT"})
-        if data.get("retCode") != 0:
-            raise Exception(data.get("retMsg"))
+        if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
         positions = []
         for p in data["result"].get("list", []):
             size = float(p.get("size") or 0)
@@ -172,24 +206,27 @@ async def get_positions():
             current = float(p.get("markPrice")     or entry)
             pnl     = float(p.get("unrealisedPnl") or 0)
             pct     = (pnl / (entry * size)) * 100 if entry and size else 0
-            side    = "LONG" if p.get("side") == "Buy" else "SHORT"
+            sl      = float(p.get("stopLoss")  or 0)
+            risk    = abs(entry - sl)
+            rr      = abs(pnl / (risk * size)) if risk and size else 0
+            be_triggered = sl == entry and entry > 0
             positions.append({
-                "id":        p.get("positionIdx") or p.get("symbol"),
-                "symbol":    p.get("symbol", ""),
-                "direction": side,
-                "entry":     entry, "current": current,
-                "tp":        float(p.get("takeProfit") or 0),
-                "sl":        float(p.get("stopLoss")   or 0),
-                "be":        entry, "size": size,
-                "pnl":       round(pnl, 2),
-                "pnlPct":    round(pct, 2),
-                "status":    "OPEN", "rrAchieved": 0,
-                "mlScore":   0, "market": "crypto",
-                "openTime":  p.get("createdTime") or datetime.utcnow().isoformat(),
+                "id":          p.get("positionIdx") or p.get("symbol"),
+                "symbol":      p.get("symbol", ""),
+                "direction":   "LONG" if p.get("side") == "Buy" else "SHORT",
+                "entry":       entry, "current": current,
+                "tp":          float(p.get("takeProfit") or 0),
+                "sl":          sl, "be": entry, "size": size,
+                "pnl":         round(pnl, 2),
+                "pnlPct":      round(pct, 2),
+                "status":      "BE" if be_triggered else "OPEN",
+                "rrAchieved":  round(rr, 2),
+                "mlScore":     0, "market": "crypto",
+                "openTime":    p.get("createdTime") or datetime.utcnow().isoformat(),
             })
         return {"positions": positions, "source": "bybit_demo"}
     except Exception as e:
-        print(f"[POSITIONS] Error: {e}")
+        print(f"[POSITIONS] {e}")
         return {"positions": [], "source": "error", "error": str(e)}
 
 @app.get("/api/signals")
@@ -205,9 +242,8 @@ async def get_history(limit: int = 50):
     try:
         data = await bybit_get("/v5/order/history",
                                {"category": "linear", "limit": str(limit)})
-        if data.get("retCode") != 0:
-            raise Exception(data.get("retMsg"))
-        trades = []
+        if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
+        trades  = []
         running = 0.0
         for o in data["result"].get("list", []):
             pnl = float(o.get("cumExecFee") or 0) * -1
@@ -225,41 +261,48 @@ async def get_history(limit: int = 50):
             })
         return {"trades": trades, "total": len(trades), "source": "bybit_demo"}
     except Exception as e:
-        print(f"[HISTORY] Error: {e}")
+        print(f"[HISTORY] {e}")
         return {"trades": [], "total": 0, "source": "error", "error": str(e)}
 
 @app.post("/api/settings")
 async def update_settings(settings: dict):
-    # Update signal engine threshold if provided
+    auto_executor.update_settings(settings)
     if "mlThreshold" in settings:
         signal_engine.threshold = float(settings["mlThreshold"])
     return {"success": True, "settings": settings}
 
+@app.post("/api/mode/{mode}")
+async def set_mode(mode: str):
+    if mode not in ("MANUAL", "SEMI-AUTO", "FULL-AUTO"):
+        return {"success": False, "error": "Invalid mode"}
+    auto_executor.set_mode(mode)
+    print(f"[MODE] Switched to {mode}")
+    await manager.broadcast({
+        "type": "mode_change", "mode": mode,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"success": True, "mode": mode}
+
+@app.post("/api/pause/{state}")
+async def set_pause(state: str):
+    paused = state.lower() == "true"
+    auto_executor.set_paused(paused)
+    await manager.broadcast({
+        "type": "pause_change", "paused": paused,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"success": True, "paused": paused}
+
 @app.post("/api/execute/{signal_id}")
 async def execute_signal(signal_id: str):
-    """Execute a signal — place order on Bybit demo"""
     sig = next((s for s in signal_engine.signals if s.id == signal_id), None)
     if not sig:
         return {"success": False, "error": "Signal not found"}
-    try:
-        body = {
-            "category":    "linear",
-            "symbol":      sig.symbol.replace("/", ""),
-            "side":        "Buy" if sig.direction == "LONG" else "Sell",
-            "orderType":   "Market",
-            "qty":         "0.01",   # minimum size — user adjusts in settings
-            "takeProfit":  str(sig.tp),
-            "stopLoss":    str(sig.sl),
-            "tpTriggerBy": "MarkPrice",
-            "slTriggerBy": "MarkPrice",
-        }
-        result = await bybit_post("/v5/order/create", body)
-        return {"success": result.get("retCode") == 0, "result": result}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    result = await auto_executor.execute_signal(vars(sig) if hasattr(sig, '__dict__') else sig.__dict__ if hasattr(sig, '__dict__') else asdict(sig) if hasattr(sig, '__dataclass_fields__') else sig)
+    return result
 
 @app.post("/api/positions/{position_id}/close")
-async def close_position(position_id: str, reason: str = "manual"):
+async def close_position(position_id: str):
     try:
         data = await bybit_post("/v5/order/cancel",
                                 {"category": "linear", "orderId": position_id})
@@ -273,19 +316,22 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     print("INFO:     connection open")
 
-    # Send current signals immediately on connect
+    # Send current state on connect
     try:
         await websocket.send_text(json.dumps({
             "type":    "signal_update",
             "signals": signal_engine.get_active(),
             "timestamp": datetime.utcnow().isoformat(),
         }))
+        await websocket.send_text(json.dumps({
+            "type": "mode_change",
+            "mode": auto_executor.mode,
+        }))
     except: pass
 
     try:
         while True:
             try:
-                # Fetch positions every 2s
                 data = await bybit_get("/v5/position/list",
                                        {"category": "linear", "settleCoin": "USDT"})
                 positions = []
@@ -293,17 +339,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     for p in data["result"].get("list", []):
                         size = float(p.get("size") or 0)
                         if size == 0: continue
+                        entry = float(p.get("avgPrice") or 0)
+                        sl    = float(p.get("stopLoss") or 0)
                         positions.append({
                             "id":        p.get("positionIdx") or p.get("symbol"),
                             "symbol":    p.get("symbol", ""),
                             "direction": "LONG" if p.get("side") == "Buy" else "SHORT",
-                            "entry":     float(p.get("avgPrice")      or 0),
-                            "current":   float(p.get("markPrice")     or 0),
+                            "entry":     entry,
+                            "current":   float(p.get("markPrice") or 0),
                             "pnl":       round(float(p.get("unrealisedPnl") or 0), 2),
                             "tp":        float(p.get("takeProfit") or 0),
-                            "sl":        float(p.get("stopLoss")   or 0),
-                            "status":    "OPEN", "rrAchieved": 0,
-                            "mlScore":   0, "market": "crypto",
+                            "sl":        sl,
+                            "status":    "BE" if sl == entry and entry > 0 else "OPEN",
+                            "rrAchieved": 0, "mlScore": 0, "market": "crypto",
                         })
                 await manager.broadcast({
                     "type":      "position_update",
@@ -311,8 +359,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     "timestamp": datetime.utcnow().isoformat(),
                 })
             except Exception as e:
-                print(f"[WS] Error: {e}")
+                print(f"[WS] {e}")
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         print("INFO:     connection closed")
+
+# Fix import
+from dataclasses import asdict

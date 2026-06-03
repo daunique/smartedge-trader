@@ -54,3 +54,16 @@ class ApiService {
 }
 
 export const api = new ApiService()
+
+  // ── Mode & Control ────────────────────────────────────────────
+  async setMode(mode) {
+    return this.request(`/api/mode/${mode}`, { method: 'POST' })
+  }
+
+  async setPause(paused) {
+    return this.request(`/api/pause/${paused}`, { method: 'POST' })
+  }
+
+  async executeSignal(signalId) {
+    return this.request(`/api/execute/${signalId}`, { method: 'POST' })
+  }
