@@ -8,6 +8,7 @@ import {
 } from 'recharts'
 import { useStore } from '../../store'
 import { api } from '../../services/api'
+import SignalModal from '../shared/SignalModal'
 import clsx from 'clsx'
 import { format } from 'date-fns'
 
@@ -69,6 +70,7 @@ function StatCard({ label, value, sub, subColor, icon: Icon, iconColor }) {
 // ── Signal Card ───────────────────────────────────────────────────
 function SignalCard({ signal }) {
   const { executionMode } = useStore()
+  const [modalOpen, setModalOpen] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [execResult, setExecResult] = useState(null) // null | 'success' | 'error'
   const [execMsg, setExecMsg]       = useState('')
@@ -105,8 +107,8 @@ function SignalCard({ signal }) {
   const canExecute = executionMode !== 'MANUAL' && !execResult
 
   return (
-    <div className={clsx(
-      'card p-4 flex flex-col gap-3 transition-all duration-300 animate-slide-up',
+    <div onClick={() => setModalOpen(true)} className={clsx(
+      'card p-4 flex flex-col gap-3 transition-all duration-300 animate-slide-up cursor-pointer hover:border-accent-cyan/20',
       signal.status === 'ACTIVE' && 'border-accent-green/20',
       execResult === 'success' && 'border-accent-green/40',
       execResult === 'error'   && 'border-accent-red/30',
@@ -198,7 +200,7 @@ function SignalCard({ signal }) {
       {/* Execute Button — Semi-Auto */}
       {executionMode === 'SEMI-AUTO' && !execResult && (
         <button
-          onClick={handleExecute}
+          onClick={(e) => { e.stopPropagation(); handleExecute(e); }}
           disabled={executing}
           className={clsx(
             'w-full flex items-center justify-center gap-2 py-2 rounded-lg border font-body text-sm font-semibold transition-all',
@@ -214,6 +216,16 @@ function SignalCard({ signal }) {
             : <><Play size={13} /> Execute {signal.direction}</>
           }
         </button>
+      )}
+
+      {/* Signal Detail Modal */}
+      {modalOpen && (
+        <SignalModal
+          signal={signal}
+          onClose={() => setModalOpen(false)}
+          onExecute={handleExecute}
+          executionMode={executionMode}
+        />
       )}
 
       {/* Full-Auto indicator */}

@@ -3,21 +3,6 @@ import { persist } from 'zustand/middleware'
 
 const generateId = () => Math.random().toString(36).substr(2, 9)
 
-const initialPositions = [
-  {
-    id: generateId(), symbol: 'BTC/USDT', direction: 'LONG',
-    entry: 67420, current: 68150, tp: 69680, sl: 66500, be: 68200,
-    size: 0.15, status: 'OPEN', rrAchieved: 0.85, mlScore: 0.82,
-    pnl: 109.5, pnlPct: 1.08, openTime: Date.now() - 3600000, market: 'crypto'
-  },
-  {
-    id: generateId(), symbol: 'ETH/USDT', direction: 'LONG',
-    entry: 3580, current: 3612, tp: 3760, sl: 3520, be: 3640,
-    size: 1.2, status: 'OPEN', rrAchieved: 0.53, mlScore: 0.74,
-    pnl: 38.4, pnlPct: 0.89, openTime: Date.now() - 1800000, market: 'crypto'
-  },
-]
-
 const generateHistory = () => {
   const symbols = ['BTC/USDT','ETH/USDT','SOL/USDT','EUR/USD','GBP/USD','USD/JPY','XRP/USDT','BNB/USDT']
   const history = []
@@ -43,52 +28,53 @@ const generateHistory = () => {
 }
 
 const DEFAULT_SETTINGS = {
-  riskPerTrade: 1,
-  minRR: 3,
+  riskPerTrade:    1,
+  minRR:           3,
   maxTradesPerDay: 3,
-  dailyLossLimit: 2,
-  orbTimeframe: 15,
-  beTrigger: 1,
-  trailingStop: true,
-  mlThreshold: 0.65,
-  notifications: true,
-  mobileAlerts: true,
-  apiKey: '',
-  apiSecret: '',
+  dailyLossLimit:  2,
+  orbTimeframe:    15,
+  beTrigger:       1,
+  trailingStop:    true,
+  mlThreshold:     0.65,
+  notifications:   true,
+  mobileAlerts:    true,
+  apiKey:          '',
+  apiSecret:       '',
 }
 
 export const useStore = create(
   persist(
     (set, get) => ({
-      // ── Persisted state (survives refresh) ──────────────────────
-      executionMode: 'SEMI-AUTO',
-      accountMode:   'DEMO',
-      marketFilter:  'ALL',
-      settings:      DEFAULT_SETTINGS,
+      // ── Persisted across refresh ───────────────────────────────
+      executionMode:  'SEMI-AUTO',
+      accountMode:    'DEMO',
+      marketFilter:   'ALL',
+      activePage:     'dashboard',
+      settings:       DEFAULT_SETTINGS,
 
-      // ── Non-persisted (reset on refresh, loaded from backend) ───
-      activePage:        'dashboard',
-      sidebarOpen:       false,
-      systemPaused:      false,
-      backendConnected:  false,
-      wsConnected:       false,
-      livePrices:        {},
-      positions:         initialPositions,
-      signals:           [],
-      tradeHistory:      generateHistory(),
-      portfolioBalance:  0,
-      dailyPnl:          0,
-      dailyPnlPct:       0,
-      weeklyPnl:         842.30,
-      monthlyPnl:        3240.80,
-      winRate:           58,
-      avgRR:             2.4,
-      totalTrades:       247,
-      currentStreak:     4,
-      maxDrawdown:       3.2,
-      sharpeRatio:       2.18,
+      // ── Runtime only (loaded fresh from backend) ───────────────
+      sidebarOpen:        false,
+      systemPaused:       false,
+      backendConnected:   false,
+      wsConnected:        false,
+      livePrices:         {},
+      positions:          [],
+      signals:            [],
+      tradeHistory:       generateHistory(),
+      portfolioBalance:   0,
+      dailyPnl:           0,
+      dailyPnlPct:        0,
+      weeklyPnl:          0,
+      monthlyPnl:         0,
+      winRate:            58,
+      avgRR:              2.4,
+      totalTrades:        247,
+      currentStreak:      4,
+      maxDrawdown:        3.2,
+      sharpeRatio:        2.18,
+      activeExchange:     'bybit',
 
-      // ── Actions ─────────────────────────────────────────────────
+      // ── Setters ────────────────────────────────────────────────
       setExecutionMode:    (mode) => set({ executionMode: mode }),
       setAccountMode:      (mode) => set({ accountMode: mode }),
       setMarketFilter:     (f)    => set({ marketFilter: f }),
@@ -97,6 +83,7 @@ export const useStore = create(
       setPaused:           (v)    => set({ systemPaused: v }),
       setBackendConnected: (v)    => set({ backendConnected: v }),
       setWsConnected:      (v)    => set({ wsConnected: v }),
+      setActiveExchange:   (ex)   => set({ activeExchange: ex }),
       updateLivePrices:    (p)    => set({ livePrices: p }),
 
       updateSettings: (updates) => set(state => ({
@@ -107,7 +94,9 @@ export const useStore = create(
       refreshSignals:   (signals)   => set({ signals }),
 
       updatePosition: (id, updates) => set(state => ({
-        positions: state.positions.map(p => p.id === id ? { ...p, ...updates } : p)
+        positions: state.positions.map(p =>
+          p.id === id ? { ...p, ...updates } : p
+        )
       })),
       closePosition: (id) => set(state => ({
         positions: state.positions.filter(p => p.id !== id)
@@ -117,23 +106,21 @@ export const useStore = create(
       })),
 
       refreshPortfolio: (data) => set({
-        portfolioBalance: data.balance        ?? get().portfolioBalance,
-        dailyPnl:         data.daily_pnl      ?? get().dailyPnl,
-        dailyPnlPct:      data.daily_pnl_pct  ?? get().dailyPnlPct,
-        winRate:          data.win_rate        ?? get().winRate,
-        avgRR:            data.avg_rr          ?? get().avgRR,
+        portfolioBalance: data.balance       ?? get().portfolioBalance,
+        dailyPnl:         data.daily_pnl     ?? get().dailyPnl,
+        dailyPnlPct:      data.daily_pnl_pct ?? get().dailyPnlPct,
+        winRate:          data.win_rate       ?? get().winRate,
+        avgRR:            data.avg_rr         ?? get().avgRR,
       }),
-
-      setActiveExchange: (ex) => set({ activeExchange: ex }),
-      activeExchange: 'bybit',
     }),
     {
-      name: 'smartedge-store',   // localStorage key
-      partialState: (state) => ({
-        // Only persist these fields
+      name: 'smartedge-v1',
+      // Only persist these keys — everything else reloads from backend
+      partialize: (state) => ({
         executionMode: state.executionMode,
         accountMode:   state.accountMode,
         marketFilter:  state.marketFilter,
+        activePage:    state.activePage,
         settings:      state.settings,
       }),
     }

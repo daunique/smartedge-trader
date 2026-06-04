@@ -16,7 +16,7 @@ API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 # ── Signed requests ───────────────────────────────────────────────
 async def bybit_post(path: str, body: dict) -> dict:
     ts          = str(int(time.time() * 1000))
-    recv_window = "5000"
+    recv_window = "20000"
     body_str    = json.dumps(body)
     param_str   = ts + API_KEY + recv_window + body_str
     sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
@@ -33,7 +33,7 @@ async def bybit_post(path: str, body: dict) -> dict:
 
 async def bybit_get(path: str, params: dict = {}) -> dict:
     ts          = str(int(time.time() * 1000))
-    recv_window = "5000"
+    recv_window = "20000"
     param_str   = ts + API_KEY + recv_window + "&".join(
         f"{k}={v}" for k, v in sorted(params.items())
     )

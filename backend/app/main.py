@@ -20,8 +20,9 @@ API_KEY    = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
 def sign_headers(params: dict) -> dict:
+    # Use larger recv_window to handle server clock drift
     ts          = str(int(time.time() * 1000))
-    recv_window = "5000"
+    recv_window = "20000"
     param_str   = ts + API_KEY + recv_window + "&".join(
         f"{k}={v}" for k, v in sorted(params.items())
     )
@@ -41,7 +42,7 @@ async def bybit_get(path: str, params: dict = {}) -> dict:
 
 async def bybit_post(path: str, body: dict = {}) -> dict:
     ts          = str(int(time.time() * 1000))
-    recv_window = "5000"
+    recv_window = "20000"
     body_str    = json.dumps(body)
     param_str   = ts + API_KEY + recv_window + body_str
     sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
@@ -74,28 +75,42 @@ manager = ConnectionManager()
 # ── Full-Auto signal watcher ──────────────────────────────────────
 async def full_auto_watcher():
     """
-    When mode = FULL-AUTO, auto-execute every new ACTIVE signal
-    that passes safety checks
+    When mode = FULL-AUTO, auto-execute new ACTIVE signals.
+    Only runs during signal engine scan cycles to avoid spam.
     """
     print("[AUTO] Full-auto watcher started")
+    last_scan_count = 0
     while True:
         try:
             if auto_executor.mode == "FULL-AUTO" and not auto_executor.paused:
-                signals = signal_engine.get_active()
-                for sig in signals:
-                    if (sig.get("status") == "ACTIVE"
-                            and sig.get("id") not in auto_executor.executed_ids):
-                        print(f"[AUTO] Full-auto executing: {sig['symbol']} {sig['direction']}")
-                        result = await auto_executor.execute_signal(sig)
-                        if result.get("success"):
-                            await manager.broadcast({
-                                "type":   "auto_executed",
-                                "result": result,
-                                "timestamp": datetime.utcnow().isoformat(),
-                            })
+                signals   = signal_engine.get_active()
+                new_count = len(signals)
+
+                # Only attempt execution when signal list has changed
+                if new_count != last_scan_count:
+                    last_scan_count = new_count
+                    executed_this_cycle = 0
+                    for sig in signals:
+                        sig_id = sig.get("id")
+                        if sig.get("status") == "ACTIVE" and sig_id not in auto_executor.executed_ids:
+                            # Stop if daily limit already hit
+                            if auto_executor.trades_today >= auto_executor.settings.get("maxTradesPerDay", 3):
+                                print(f"[AUTO] Daily limit hit ({auto_executor.trades_today}) — skipping remaining signals")
+                                break
+                            print(f"[AUTO] Executing: {sig['symbol']} {sig['direction']}")
+                            result = await auto_executor.execute_signal(sig)
+                            if result.get("success"):
+                                executed_this_cycle += 1
+                                await manager.broadcast({
+                                    "type":      "auto_executed",
+                                    "result":    result,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                })
+                    if executed_this_cycle:
+                        print(f"[AUTO] Cycle complete — {executed_this_cycle} trades placed")
         except Exception as e:
             print(f"[AUTO] Watcher error: {e}")
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
 
 # ── Daily reset at midnight UTC ───────────────────────────────────
 async def daily_reset():
