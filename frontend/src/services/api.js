@@ -1,6 +1,5 @@
 /**
  * SmartEdge Trader — API Service
- * Connects frontend to FastAPI backend
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -44,16 +43,8 @@ class ApiService {
   }
 
   async executeSignal(signalId) {
-    return this.request(`/api/signals/${signalId}/execute`, {
-      method: 'POST'
-    })
+    return this.request(`/api/execute/${signalId}`, { method: 'POST' })
   }
-
-  // ── Health ────────────────────────────────────────────────────
-  async ping() { return this.request('/health') }
-}
-
-export const api = new ApiService()
 
   // ── Mode & Control ────────────────────────────────────────────
   async setMode(mode) {
@@ -64,6 +55,8 @@ export const api = new ApiService()
     return this.request(`/api/pause/${paused}`, { method: 'POST' })
   }
 
-  async executeSignal(signalId) {
-    return this.request(`/api/execute/${signalId}`, { method: 'POST' })
-  }
+  // ── Health ────────────────────────────────────────────────────
+  async ping() { return this.request('/health') }
+}
+
+export const api = new ApiService()
