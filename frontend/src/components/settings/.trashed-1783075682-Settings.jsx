@@ -4,7 +4,6 @@ import {
   Save, RotateCcw, AlertTriangle, CheckCircle, ChevronDown
 } from 'lucide-react'
 import { useStore } from '../../store'
-import { api } from '../../services/api'
 import clsx from 'clsx'
 
 function Toggle({ value, onChange, label, desc }) {
@@ -41,8 +40,7 @@ function SliderField({ label, desc, value, min, max, step, unit, onChange, dange
         </div>
         <div className={clsx(
           'font-display text-sm font-bold px-2.5 py-1 rounded-lg border',
-          danger ? 'bg-accent-red/10 border-accent-red/30 text-accent-red'
-                 : 'bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan'
+          danger ? 'bg-accent-red/10 border-accent-red/30 text-accent-red' : 'bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan'
         )}>
           {value}{unit}
         </div>
@@ -84,53 +82,24 @@ function SelectField({ label, desc, value, options, onChange }) {
 }
 
 export default function Settings() {
-  const { settings, updateSettings, accountMode, setAccountMode, backendConnected } = useStore()
-  const [showKey, setShowKey]       = useState(false)
+  const { settings, updateSettings, accountMode, setAccountMode } = useStore()
+  const [showKey, setShowKey] = useState(false)
   const [showSecret, setShowSecret] = useState(false)
-  const [saved, setSaved]           = useState(false)
-  const [saving, setSaving]         = useState(false)
-  const [error, setError]           = useState(null)
-  const [local, setLocal]           = useState({ ...settings })
+  const [saved, setSaved] = useState(false)
+  const [localSettings, setLocalSettings] = useState({ ...settings })
 
-  const update = (key, val) => setLocal(prev => ({ ...prev, [key]: val }))
+  const update = (key, val) => setLocalSettings(prev => ({ ...prev, [key]: val }))
 
-  const handleSave = async () => {
-    setSaving(true)
-    setError(null)
-    try {
-      updateSettings(local)
-      if (backendConnected) {
-        const result = await api.saveSettings(local)
-        if (!result?.success) throw new Error('Backend save failed')
-      }
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2500)
-    } catch (e) {
-      setError('Save failed — settings stored locally only')
-      setSaved(true)
-      setTimeout(() => { setSaved(false); setError(null) }, 3000)
-    } finally {
-      setSaving(false)
-    }
+  const handleSave = () => {
+    updateSettings(localSettings)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2500)
   }
 
-  const handleReset = () => setLocal({ ...settings })
+  const handleReset = () => setLocalSettings({ ...settings })
 
   return (
     <div className="space-y-5 animate-fade-in max-w-3xl">
-
-      {/* Connection status */}
-      <div className={clsx(
-        'flex items-center gap-2 px-3 py-2 rounded-lg border font-body text-xs',
-        backendConnected
-          ? 'bg-accent-green/5 border-accent-green/20 text-accent-green'
-          : 'bg-accent-yellow/5 border-accent-yellow/20 text-accent-yellow'
-      )}>
-        <span className={clsx('w-1.5 h-1.5 rounded-full live-dot',
-          backendConnected ? 'bg-accent-green' : 'bg-accent-yellow'
-        )} />
-        {backendConnected ? 'Connected to backend — settings will sync' : 'Backend offline — settings saved locally only'}
-      </div>
 
       {/* Risk Management */}
       <div className="card p-5">
@@ -138,20 +107,28 @@ export default function Settings() {
           <Shield size={16} className="text-accent-cyan" />
           <h3 className="font-display text-sm font-bold text-text-primary">Risk Management</h3>
         </div>
-        <SliderField label="Risk Per Trade" desc="% of portfolio risked per position"
-          value={local.riskPerTrade} min={0.5} max={5} step={0.5} unit="%"
+        <SliderField
+          label="Risk Per Trade" desc="% of portfolio risked per position"
+          value={localSettings.riskPerTrade} min={0.5} max={5} step={0.5} unit="%"
           onChange={v => update('riskPerTrade', v)}
-          danger={local.riskPerTrade > 2} />
-        <SliderField label="Minimum R:R Ratio" desc="Skip signals below this threshold"
-          value={local.minRR} min={1} max={5} step={0.5} unit=":1"
-          onChange={v => update('minRR', v)} />
-        <SliderField label="Daily Loss Limit" desc="Auto-pause trading when hit"
-          value={local.dailyLossLimit} min={1} max={10} step={0.5} unit="%"
+          danger={localSettings.riskPerTrade > 2}
+        />
+        <SliderField
+          label="Minimum R:R Ratio" desc="Skip signals below this threshold"
+          value={localSettings.minRR} min={1} max={5} step={0.5} unit=":1"
+          onChange={v => update('minRR', v)}
+        />
+        <SliderField
+          label="Daily Loss Limit" desc="Auto-pause trading when hit"
+          value={localSettings.dailyLossLimit} min={1} max={10} step={0.5} unit="%"
           onChange={v => update('dailyLossLimit', v)}
-          danger={local.dailyLossLimit > 5} />
-        <SliderField label="Max Trades Per Day" desc="Hard cap on daily executions"
-          value={local.maxTradesPerDay} min={1} max={10} step={1} unit=""
-          onChange={v => update('maxTradesPerDay', v)} />
+          danger={localSettings.dailyLossLimit > 5}
+        />
+        <SliderField
+          label="Max Trades Per Day" desc="Hard cap on daily executions"
+          value={localSettings.maxTradesPerDay} min={1} max={10} step={1} unit=""
+          onChange={v => update('maxTradesPerDay', v)}
+        />
       </div>
 
       {/* Strategy */}
@@ -160,20 +137,29 @@ export default function Settings() {
           <Zap size={16} className="text-accent-yellow" />
           <h3 className="font-display text-sm font-bold text-text-primary">Strategy Parameters</h3>
         </div>
-        <SelectField label="ORB Timeframe" desc="Opening Range Breakout candle size"
-          value={local.orbTimeframe}
-          options={[{value:5,label:'5 minutes'},{value:15,label:'15 minutes'},{value:30,label:'30 minutes'}]}
-          onChange={v => update('orbTimeframe', parseInt(v))} />
-        <SelectField label="Break-Even Trigger" desc="Move SL to BE when RR achieved"
-          value={local.beTrigger}
-          options={[{value:0.5,label:'At 1:0.5'},{value:1,label:'At 1:1'},{value:1.5,label:'At 1:1.5'}]}
-          onChange={v => update('beTrigger', parseFloat(v))} />
-        <SliderField label="ML Filter Threshold" desc="Minimum confidence to take a trade"
-          value={Math.round(local.mlThreshold * 100)} min={50} max={90} step={5} unit="%"
-          onChange={v => update('mlThreshold', v / 100)} />
-        <Toggle value={local.trailingStop} onChange={v => update('trailingStop', v)}
+        <SelectField
+          label="ORB Timeframe" desc="Opening Range Breakout candle size"
+          value={localSettings.orbTimeframe}
+          options={[{ value: 5, label: '5 minutes' }, { value: 15, label: '15 minutes' }, { value: 30, label: '30 minutes' }]}
+          onChange={v => update('orbTimeframe', parseInt(v))}
+        />
+        <SelectField
+          label="Break-Even Trigger" desc="Move SL to BE when RR achieved"
+          value={localSettings.beTrigger}
+          options={[{ value: 0.5, label: 'At 1:0.5' }, { value: 1, label: 'At 1:1' }, { value: 1.5, label: 'At 1:1.5' }]}
+          onChange={v => update('beTrigger', parseFloat(v))}
+        />
+        <SliderField
+          label="ML Filter Threshold" desc="Minimum confidence to take a trade"
+          value={Math.round(localSettings.mlThreshold * 100)} min={50} max={90} step={5} unit="%"
+          onChange={v => update('mlThreshold', v / 100)}
+        />
+        <Toggle
+          value={localSettings.trailingStop}
+          onChange={v => update('trailingStop', v)}
           label="Trailing Stop Loss"
-          desc="Automatically trail SL as price moves in your favor" />
+          desc="Automatically trail SL as price moves in your favor"
+        />
       </div>
 
       {/* Exchange */}
@@ -182,6 +168,8 @@ export default function Settings() {
           <Settings2 size={16} className="text-accent-purple" />
           <h3 className="font-display text-sm font-bold text-text-primary">Exchange Configuration</h3>
         </div>
+
+        {/* Account Mode */}
         <div className="flex items-center justify-between py-3 border-b border-bg-border/50">
           <div>
             <div className="font-sans text-sm text-text-primary">Account Mode</div>
@@ -201,38 +189,44 @@ export default function Settings() {
             ))}
           </div>
         </div>
+
+        {/* API Key */}
         <div className="py-3 border-b border-bg-border/50">
           <div className="font-sans text-sm text-text-primary mb-2">Bybit API Key</div>
           <div className="flex items-center gap-2 bg-bg-elevated border border-bg-border rounded-lg px-3 py-2">
             <Key size={13} className="text-text-muted flex-shrink-0" />
-            <input type={showKey ? 'text' : 'password'}
-              value={local.apiKey}
+            <input
+              type={showKey ? 'text' : 'password'}
+              value={localSettings.apiKey}
               onChange={e => update('apiKey', e.target.value)}
               placeholder="Enter your Bybit API key"
-              className="bg-transparent font-body text-sm text-text-primary placeholder-text-muted outline-none flex-1 min-w-0" />
-            <button onClick={() => setShowKey(!showKey)} className="text-text-muted hover:text-text-secondary">
+              className="bg-transparent font-body text-sm text-text-primary placeholder-text-muted outline-none flex-1 min-w-0"
+            />
+            <button onClick={() => setShowKey(!showKey)} className="text-text-muted hover:text-text-secondary transition-colors">
               {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
             </button>
           </div>
         </div>
+
+        {/* API Secret */}
         <div className="py-3">
           <div className="font-sans text-sm text-text-primary mb-2">Bybit API Secret</div>
           <div className="flex items-center gap-2 bg-bg-elevated border border-bg-border rounded-lg px-3 py-2">
             <Key size={13} className="text-text-muted flex-shrink-0" />
-            <input type={showSecret ? 'text' : 'password'}
-              value={local.apiSecret}
+            <input
+              type={showSecret ? 'text' : 'password'}
+              value={localSettings.apiSecret}
               onChange={e => update('apiSecret', e.target.value)}
               placeholder="Enter your Bybit API secret"
-              className="bg-transparent font-body text-sm text-text-primary placeholder-text-muted outline-none flex-1 min-w-0" />
-            <button onClick={() => setShowSecret(!showSecret)} className="text-text-muted hover:text-text-secondary">
+              className="bg-transparent font-body text-sm text-text-primary placeholder-text-muted outline-none flex-1 min-w-0"
+            />
+            <button onClick={() => setShowSecret(!showSecret)} className="text-text-muted hover:text-text-secondary transition-colors">
               {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
             </button>
           </div>
           <div className="flex items-center gap-1.5 mt-2">
             <AlertTriangle size={11} className="text-accent-yellow" />
-            <span className="font-body text-xs text-accent-yellow/70">
-              Use read + trade permissions only. Never enable withdrawals.
-            </span>
+            <span className="font-body text-xs text-accent-yellow/70">Use read + trade permissions only. Never enable withdrawals.</span>
           </div>
         </div>
       </div>
@@ -243,36 +237,26 @@ export default function Settings() {
           <Bell size={16} className="text-accent-orange" />
           <h3 className="font-display text-sm font-bold text-text-primary">Notifications</h3>
         </div>
-        <Toggle value={local.notifications} onChange={v => update('notifications', v)}
+        <Toggle value={localSettings.notifications} onChange={v => update('notifications', v)}
           label="Browser Notifications" desc="Alerts for signals, TP/SL hits, and daily limits" />
-        <Toggle value={local.mobileAlerts} onChange={v => update('mobileAlerts', v)}
+        <Toggle value={localSettings.mobileAlerts} onChange={v => update('mobileAlerts', v)}
           label="Mobile Push Alerts" desc="Push notifications via PWA install" />
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-accent-red/10 border border-accent-red/30 rounded-lg">
-          <AlertTriangle size={13} className="text-accent-red" />
-          <span className="font-body text-xs text-accent-red">{error}</span>
-        </div>
-      )}
-
       {/* Save / Reset */}
       <div className="flex items-center gap-3">
-        <button onClick={handleSave} disabled={saving}
-          className={clsx(
-            'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-body text-sm font-semibold transition-all duration-300',
-            saved
-              ? 'bg-accent-green/10 border border-accent-green/30 text-accent-green'
-              : 'bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20'
-          )}>
-          {saving ? (
-            <span className="w-4 h-4 border-2 border-accent-cyan/30 border-t-accent-cyan rounded-full animate-spin" />
-          ) : saved ? <CheckCircle size={15} /> : <Save size={15} />}
-          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
+        <button onClick={handleSave} className={clsx(
+          'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-body text-sm font-semibold transition-all duration-300',
+          saved
+            ? 'bg-accent-green/10 border border-accent-green/30 text-accent-green'
+            : 'bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20'
+        )}>
+          {saved ? <CheckCircle size={15} /> : <Save size={15} />}
+          {saved ? 'Saved!' : 'Save Settings'}
         </button>
         <button onClick={handleReset} className="btn-ghost flex items-center gap-2 py-3 px-5">
-          <RotateCcw size={14} /> Reset
+          <RotateCcw size={14} />
+          Reset
         </button>
       </div>
     </div>

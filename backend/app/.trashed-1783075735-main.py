@@ -298,7 +298,7 @@ async def execute_signal(signal_id: str):
     sig = next((s for s in signal_engine.signals if s.id == signal_id), None)
     if not sig:
         return {"success": False, "error": "Signal not found"}
-    result = await auto_executor.execute_signal(asdict(sig))
+    result = await auto_executor.execute_signal(vars(sig) if hasattr(sig, '__dict__') else sig.__dict__ if hasattr(sig, '__dict__') else asdict(sig) if hasattr(sig, '__dataclass_fields__') else sig)
     return result
 
 @app.post("/api/positions/{position_id}/close")

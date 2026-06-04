@@ -1,17 +1,16 @@
 import React, { useState, useEffect } from 'react'
-import { Menu, X, Zap, Shield, AlertTriangle } from 'lucide-react'
+import { Menu, X, Zap, Shield, AlertTriangle, ChevronDown, Wifi, WifiOff } from 'lucide-react'
 import { useStore } from '../../store'
-import { api } from '../../services/api'
 import clsx from 'clsx'
 
 const MODES = ['MANUAL', 'SEMI-AUTO', 'FULL-AUTO']
 const MODE_COLORS = {
-  'MANUAL':    'text-text-secondary border-text-muted',
+  'MANUAL': 'text-text-secondary border-text-muted',
   'SEMI-AUTO': 'text-accent-yellow border-accent-yellow',
   'FULL-AUTO': 'text-accent-green border-accent-green',
 }
 const MODE_BG = {
-  'MANUAL':    'bg-text-muted/10',
+  'MANUAL': 'bg-text-muted/10',
   'SEMI-AUTO': 'bg-accent-yellow/10',
   'FULL-AUTO': 'bg-accent-green/10',
 }
@@ -22,13 +21,13 @@ export default function Header() {
     accountMode, setAccountMode,
     sidebarOpen, setSidebarOpen,
     systemPaused, setPaused,
-    portfolioBalance, dailyPnl, dailyPnlPct,
-    backendConnected,
+    activePage, setActivePage,
+    portfolioBalance, dailyPnl, dailyPnlPct
   } = useStore()
 
   const [time, setTime] = useState(new Date())
+  const [showModeMenu, setShowModeMenu] = useState(false)
   const [showConfirm, setShowConfirm] = useState(null)
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000)
@@ -39,35 +38,14 @@ export default function Header() {
     if (mode === 'FULL-AUTO') {
       setShowConfirm(mode)
     } else {
-      applyMode(mode)
+      setExecutionMode(mode)
     }
+    setShowModeMenu(false)
   }
 
-  const applyMode = async (mode) => {
-    setExecutionMode(mode)
-    setSaving(true)
-    try {
-      if (backendConnected) {
-        await api.setMode(mode)
-      }
-    } catch (e) {
-      console.error('Mode change failed:', e)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const confirmMode = async () => {
-    await applyMode(showConfirm)
+  const confirmMode = () => {
+    setExecutionMode(showConfirm)
     setShowConfirm(null)
-  }
-
-  const handlePause = async () => {
-    const newPaused = !systemPaused
-    setPaused(newPaused)
-    if (backendConnected) {
-      await api.setPause(newPaused)
-    }
   }
 
   return (
@@ -95,9 +73,6 @@ export default function Header() {
 
           {/* Center: Mode Toggle */}
           <div className="flex items-center gap-1 bg-bg-card border border-bg-border rounded-lg p-0.5 relative">
-            {saving && (
-              <div className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-accent-cyan animate-pulse" />
-            )}
             {MODES.map(mode => (
               <button
                 key={mode}
@@ -115,8 +90,9 @@ export default function Header() {
             ))}
           </div>
 
-          {/* Right */}
+          {/* Right: Stats + Controls */}
           <div className="flex items-center gap-2">
+            {/* Balance - hidden on small screens */}
             <div className="hidden md:flex flex-col items-end">
               <span className="font-display text-sm font-bold text-text-primary">
                 ${portfolioBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
@@ -144,7 +120,7 @@ export default function Header() {
 
             {/* Pause/Emergency */}
             <button
-              onClick={handlePause}
+              onClick={() => setPaused(!systemPaused)}
               className={clsx(
                 'p-1.5 rounded-lg border transition-all duration-200',
                 systemPaused
@@ -158,9 +134,7 @@ export default function Header() {
 
             {/* Clock */}
             <div className="hidden lg:flex items-center gap-1.5 bg-bg-card border border-bg-border rounded-lg px-2.5 py-1.5">
-              <span className={clsx('w-1.5 h-1.5 rounded-full live-dot',
-                backendConnected ? 'bg-accent-green' : 'bg-accent-yellow'
-              )} />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan live-dot" />
               <span className="font-body text-xs text-text-secondary">
                 {time.toUTCString().slice(17, 25)} UTC
               </span>
@@ -168,6 +142,7 @@ export default function Header() {
           </div>
         </div>
 
+        {/* System Paused Banner */}
         {systemPaused && (
           <div className="bg-accent-red/10 border-b border-accent-red/30 px-4 py-1.5 flex items-center gap-2">
             <AlertTriangle size={13} className="text-accent-red" />
@@ -192,13 +167,7 @@ export default function Header() {
               </div>
             </div>
             <div className="space-y-2 mb-5">
-              {[
-                'ML score filter active (≥65%)',
-                'Daily loss limit enforced (2%)',
-                'Max trades/day respected',
-                'Kill switch always active',
-                'Break-even auto-triggered at 1:1',
-              ].map(item => (
+              {['ML score filter active (≥0.65)', 'Daily loss limit enforced (2%)', 'Max trades/day respected', 'Kill switch always active'].map(item => (
                 <div key={item} className="flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-accent-green" />
                   <span className="font-body text-xs text-text-secondary">{item}</span>
