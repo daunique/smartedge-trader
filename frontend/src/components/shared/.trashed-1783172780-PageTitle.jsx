@@ -1,11 +1,10 @@
 import React from 'react'
 
 const PAGE_META = {
-  dashboard:  { title: 'Dashboard',     sub: 'Live trading overview' },
-  signals:    { title: 'Live Signals',  sub: 'Active trading signals' },
-  history:    { title: 'Trade History', sub: 'Daily execution log' },
-  statistics: { title: 'Statistics',    sub: 'Performance analytics' },
-  settings:   { title: 'Settings',      sub: 'System configuration' },
+  dashboard: { title: 'Dashboard', sub: 'Live trading overview' },
+  history: { title: 'Trade History', sub: 'Complete execution log' },
+  statistics: { title: 'Statistics', sub: 'Performance analytics' },
+  settings: { title: 'Settings', sub: 'System configuration' },
 }
 
 export default function PageTitle({ page }) {

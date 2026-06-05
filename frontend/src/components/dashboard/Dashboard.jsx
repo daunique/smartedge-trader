@@ -1,30 +1,25 @@
 import React, { useState, useEffect } from 'react'
 import {
   TrendingUp, TrendingDown, Activity, Target, Zap,
-  Clock, BarChart2, Shield, Play, Loader, CheckCircle, XCircle
+  Clock, BarChart2, Shield, TrendingUp as WinIcon
 } from 'lucide-react'
-import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer
-} from 'recharts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useStore } from '../../store'
-import { api } from '../../services/api'
-import SignalModal from '../shared/SignalModal'
 import clsx from 'clsx'
 import { format } from 'date-fns'
 
-// ── Equity Chart ──────────────────────────────────────────────────
 function EquityChart() {
   const { tradeHistory } = useStore()
-  const data = tradeHistory.slice(-20).map((t, i) => ({
-    i, pnl: t.runningPnl, date: format(new Date(t.date), 'MMM d')
+  const data = tradeHistory.slice(-20).map(t => ({
+    pnl: t.runningPnl,
+    date: format(new Date(t.date), 'MMM d')
   }))
   const CustomTooltip = ({ active, payload }) => {
     if (!active || !payload?.length) return null
     return (
       <div className="bg-bg-elevated border border-bg-border rounded-lg px-3 py-2">
         <p className="font-body text-xs text-text-secondary">{payload[0]?.payload?.date}</p>
-        <p className={clsx('font-display text-sm font-bold',
-          payload[0]?.value >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+        <p className={clsx('font-display text-sm font-bold', payload[0]?.value >= 0 ? 'text-accent-green' : 'text-accent-red')}>
           ${payload[0]?.value?.toLocaleString()}
         </p>
       </div>
@@ -35,21 +30,19 @@ function EquityChart() {
       <AreaChart data={data} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor="#00D4FF" stopOpacity={0.3} />
+            <stop offset="5%" stopColor="#00D4FF" stopOpacity={0.3} />
             <stop offset="95%" stopColor="#00D4FF" stopOpacity={0} />
           </linearGradient>
         </defs>
         <XAxis dataKey="date" hide />
         <YAxis hide domain={['auto', 'auto']} />
         <Tooltip content={<CustomTooltip />} />
-        <Area type="monotone" dataKey="pnl" stroke="#00D4FF"
-          strokeWidth={1.5} fill="url(#equityGrad)" />
+        <Area type="monotone" dataKey="pnl" stroke="#00D4FF" strokeWidth={1.5} fill="url(#equityGrad)" />
       </AreaChart>
     </ResponsiveContainer>
   )
 }
 
-// ── Stat Card ─────────────────────────────────────────────────────
 function StatCard({ label, value, sub, subColor, icon: Icon, iconColor }) {
   return (
     <div className="card p-4 flex flex-col gap-2">
@@ -67,182 +60,9 @@ function StatCard({ label, value, sub, subColor, icon: Icon, iconColor }) {
   )
 }
 
-// ── Signal Card ───────────────────────────────────────────────────
-function SignalCard({ signal }) {
-  const { executionMode } = useStore()
-  const [modalOpen, setModalOpen] = useState(false)
-  const [executing, setExecuting] = useState(false)
-  const [execResult, setExecResult] = useState(null) // null | 'success' | 'error'
-  const [execMsg, setExecMsg]       = useState('')
-
-  const isLong = signal.direction === 'LONG'
-  const statusConfig = {
-    ACTIVE:  { color: 'text-accent-green',  bg: 'bg-accent-green/10 border-accent-green/20',  label: '● ACTIVE' },
-    PENDING: { color: 'text-accent-yellow', bg: 'bg-accent-yellow/10 border-accent-yellow/20', label: '◐ PENDING' },
-    WATCH:   { color: 'text-text-secondary', bg: 'bg-bg-border/40 border-bg-border',            label: '○ WATCH' },
-  }
-  const cfg = statusConfig[signal.status] || statusConfig.WATCH
-
-  const handleExecute = async () => {
-    if (executing || execResult) return
-    setExecuting(true)
-    try {
-      const result = await api.executeSignal(signal.id)
-      if (result?.success) {
-        setExecResult('success')
-        setExecMsg(`Order placed — ${result.qty} ${signal.symbol}`)
-      } else {
-        setExecResult('error')
-        setExecMsg(result?.reason || result?.error || 'Execution failed')
-      }
-    } catch (e) {
-      setExecResult('error')
-      setExecMsg('Network error')
-    } finally {
-      setExecuting(false)
-      setTimeout(() => { setExecResult(null); setExecMsg('') }, 5000)
-    }
-  }
-
-  const canExecute = executionMode !== 'MANUAL' && !execResult
-
-  return (
-    <div onClick={() => setModalOpen(true)} className={clsx(
-      'card p-4 flex flex-col gap-3 transition-all duration-300 animate-slide-up cursor-pointer hover:border-accent-cyan/20',
-      signal.status === 'ACTIVE' && 'border-accent-green/20',
-      execResult === 'success' && 'border-accent-green/40',
-      execResult === 'error'   && 'border-accent-red/30',
-    )}>
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="font-display text-sm font-bold text-text-primary">{signal.symbol}</span>
-          <span className={clsx('text-xs font-body font-semibold',
-            isLong ? 'badge-long' : 'badge-short')}>{signal.direction}</span>
-          <span className="font-body text-xs text-text-muted">{signal.market?.toUpperCase()}</span>
-        </div>
-        <span className={clsx('font-body text-xs border px-2 py-0.5 rounded', cfg.bg, cfg.color)}>
-          {cfg.label}
-        </span>
-      </div>
-
-      {/* Price Levels */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-bg-elevated rounded-lg p-2">
-          <div className="font-body text-xs text-text-muted mb-1">ENTRY</div>
-          <div className="font-display text-xs font-bold text-text-primary">{signal.entry}</div>
-        </div>
-        <div className="bg-accent-green/5 border border-accent-green/10 rounded-lg p-2">
-          <div className="font-body text-xs text-accent-green/60 mb-1">TP</div>
-          <div className="font-display text-xs font-bold text-accent-green">{Number(signal.tp).toFixed(4)}</div>
-        </div>
-        <div className="bg-accent-red/5 border border-accent-red/10 rounded-lg p-2">
-          <div className="font-body text-xs text-accent-red/60 mb-1">SL</div>
-          <div className="font-display text-xs font-bold text-accent-red">{Number(signal.sl).toFixed(4)}</div>
-        </div>
-      </div>
-
-      {/* ML Score */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <div className="flex items-center justify-between mb-1">
-            <span className="font-body text-xs text-text-muted">ML Score</span>
-            <span className={clsx('font-body text-xs font-semibold',
-              signal.confidence >= 75 ? 'text-accent-green'
-              : signal.confidence >= 60 ? 'text-accent-yellow'
-              : 'text-accent-red'
-            )}>{signal.confidence}%</span>
-          </div>
-          <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
-            <div className={clsx('h-full rounded-full transition-all duration-500',
-              signal.confidence >= 75 ? 'bg-accent-green'
-              : signal.confidence >= 60 ? 'bg-accent-yellow'
-              : 'bg-accent-red'
-            )} style={{ width: `${signal.confidence}%` }} />
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="font-body text-xs text-text-muted">RR</div>
-          <div className="font-display text-xs font-bold text-accent-cyan">{signal.rr}</div>
-        </div>
-      </div>
-
-      {/* Confluence Tags */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-          signal.vwapAbove
-            ? 'bg-accent-green/5 border-accent-green/20 text-accent-green/80'
-            : 'bg-accent-red/5 border-accent-red/20 text-accent-red/80'
-        )}>VWAP {signal.vwapAbove ? '▲' : '▼'}</span>
-        <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-          signal.orbBreak
-            ? 'bg-accent-cyan/5 border-accent-cyan/20 text-accent-cyan/80'
-            : 'bg-bg-border/40 border-bg-border text-text-muted'
-        )}>ORB {signal.orbBreak ? '✓' : '—'}</span>
-        <span className="font-body text-xs px-2 py-0.5 rounded border bg-accent-purple/5 border-accent-purple/20 text-accent-purple/80">
-          {signal.regime}
-        </span>
-      </div>
-
-      {/* Execution Result */}
-      {execResult && (
-        <div className={clsx(
-          'flex items-center gap-2 px-3 py-2 rounded-lg border font-body text-xs',
-          execResult === 'success'
-            ? 'bg-accent-green/10 border-accent-green/30 text-accent-green'
-            : 'bg-accent-red/10 border-accent-red/30 text-accent-red'
-        )}>
-          {execResult === 'success' ? <CheckCircle size={13} /> : <XCircle size={13} />}
-          {execMsg}
-        </div>
-      )}
-
-      {/* Execute Button — Semi-Auto */}
-      {executionMode === 'SEMI-AUTO' && !execResult && (
-        <button
-          onClick={(e) => { e.stopPropagation(); handleExecute(e); }}
-          disabled={executing}
-          className={clsx(
-            'w-full flex items-center justify-center gap-2 py-2 rounded-lg border font-body text-sm font-semibold transition-all',
-            executing
-              ? 'bg-bg-elevated border-bg-border text-text-muted cursor-not-allowed'
-              : isLong
-                ? 'bg-accent-green/10 border-accent-green/30 text-accent-green hover:bg-accent-green/20'
-                : 'bg-accent-red/10 border-accent-red/30 text-accent-red hover:bg-accent-red/20'
-          )}
-        >
-          {executing
-            ? <><Loader size={13} className="animate-spin" /> Placing order...</>
-            : <><Play size={13} /> Execute {signal.direction}</>
-          }
-        </button>
-      )}
-
-      {/* Signal Detail Modal */}
-      {modalOpen && (
-        <SignalModal
-          signal={signal}
-          onClose={() => setModalOpen(false)}
-          onExecute={handleExecute}
-          executionMode={executionMode}
-        />
-      )}
-
-      {/* Full-Auto indicator */}
-      {executionMode === 'FULL-AUTO' && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-accent-green/5 border border-accent-green/20 rounded-lg">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />
-          <span className="font-body text-xs text-accent-green">Auto-executing when ACTIVE</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Position Row ──────────────────────────────────────────────────
 function PositionRow({ position }) {
-  const isLong    = position.direction === 'LONG'
-  const progress  = Math.min(100, Math.max(0, (position.rrAchieved / 3) * 100))
+  const isLong   = position.direction === 'LONG'
+  const progress = Math.min(100, Math.max(0, (position.rrAchieved / 3) * 100))
   const statusCfg = {
     OPEN: { color: 'text-accent-cyan',   label: 'OPEN' },
     BE:   { color: 'text-accent-yellow', label: 'BE ✓' },
@@ -253,9 +73,7 @@ function PositionRow({ position }) {
     <div className="grid grid-cols-12 gap-2 px-4 py-3 hover:bg-bg-elevated/50 transition-colors border-b border-bg-border/50 items-center">
       <div className="col-span-3 sm:col-span-2">
         <div className="font-display text-xs font-bold text-text-primary">{position.symbol}</div>
-        <div className={clsx('font-body text-xs', isLong ? 'text-accent-green' : 'text-accent-red')}>
-          {position.direction}
-        </div>
+        <div className={clsx('font-body text-xs', isLong ? 'text-accent-green' : 'text-accent-red')}>{position.direction}</div>
       </div>
       <div className="col-span-2 hidden sm:block">
         <div className="font-body text-xs text-text-muted">Entry</div>
@@ -266,50 +84,41 @@ function PositionRow({ position }) {
         <div className="font-body text-xs text-text-primary">{position.current}</div>
       </div>
       <div className="col-span-3 sm:col-span-2">
-        <div className="font-body text-xs text-text-muted mb-1">RR Progress</div>
+        <div className="font-body text-xs text-text-muted mb-1">RR</div>
         <div className="flex items-center gap-1.5">
           <div className="flex-1 h-1 bg-bg-elevated rounded-full overflow-hidden">
-            <div className="h-full bg-accent-cyan rounded-full"
-              style={{ width: `${progress}%` }} />
+            <div className="h-full bg-accent-cyan rounded-full" style={{ width: `${progress}%` }} />
           </div>
-          <span className="font-body text-xs text-accent-cyan">{position.rrAchieved?.toFixed(1)}</span>
+          <span className="font-body text-xs text-accent-cyan">{(position.rrAchieved || 0).toFixed(1)}</span>
         </div>
       </div>
       <div className="col-span-2 hidden lg:block">
-        <div className="font-body text-xs text-text-muted">Status</div>
-        <div className={clsx('font-body text-xs font-semibold',
-          statusCfg[position.status]?.color || 'text-text-muted')}>
+        <div className={clsx('font-body text-xs font-semibold', statusCfg[position.status]?.color || 'text-text-muted')}>
           {statusCfg[position.status]?.label || position.status}
         </div>
       </div>
       <div className="col-span-4 sm:col-span-2 text-right">
-        <div className={clsx('font-display text-sm font-bold',
-          position.pnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-          {position.pnl >= 0 ? '+' : ''}${position.pnl?.toFixed(2)}
+        <div className={clsx('font-display text-sm font-bold', position.pnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+          {position.pnl >= 0 ? '+' : ''}${(position.pnl || 0).toFixed(2)}
         </div>
-        <div className={clsx('font-body text-xs',
-          position.pnl >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
-          {position.pnl >= 0 ? '+' : ''}{position.pnlPct?.toFixed(2)}%
+        <div className={clsx('font-body text-xs', position.pnl >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
+          {position.pnl >= 0 ? '+' : ''}{(position.pnlPct || 0).toFixed(2)}%
         </div>
       </div>
     </div>
   )
 }
 
-// ── ORB Countdown ─────────────────────────────────────────────────
 function OrbCountdown() {
   const [timeLeft, setTimeLeft] = useState('')
   const [phase, setPhase]       = useState('')
   useEffect(() => {
     const tick = () => {
-      const now    = new Date()
-      const utcH   = now.getUTCHours()
-      const utcM   = now.getUTCMinutes()
-      const utcS   = now.getUTCSeconds()
-      const total  = utcH * 3600 + utcM * 60 + utcS
-      const nyOpen = 14 * 3600 + 30 * 60
-      const orbEnd = nyOpen + 15 * 60
-      const execEnd= nyOpen + 2 * 3600
+      const now   = new Date()
+      const total = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds()
+      const nyOpen  = 14 * 3600 + 30 * 60
+      const orbEnd  = nyOpen + 15 * 60
+      const execEnd = nyOpen + 2 * 3600
       if (total < nyOpen) {
         const d = nyOpen - total
         setTimeLeft(`${Math.floor(d/3600)}h ${Math.floor((d%3600)/60)}m ${d%60}s`)
@@ -350,19 +159,78 @@ function OrbCountdown() {
   )
 }
 
-// ── Main Dashboard ────────────────────────────────────────────────
+function StreakCard({ tradeHistory }) {
+  // Calculate current streak and best streak from real data
+  const sorted = [...tradeHistory].sort((a, b) => new Date(b.date) - new Date(a.date))
+
+  let currentStreak = 0
+  let streakType    = null
+  for (const t of sorted) {
+    if (!streakType) { streakType = t.status; currentStreak = 1 }
+    else if (t.status === streakType) currentStreak++
+    else break
+  }
+
+  let bestWin = 0, bestLoss = 0, cur = 0, curType = null
+  for (const t of [...tradeHistory].sort((a, b) => new Date(a.date) - new Date(b.date))) {
+    if (!curType) { curType = t.status; cur = 1 }
+    else if (t.status === curType) { cur++ }
+    else { curType = t.status; cur = 1 }
+    if (curType === 'TP') bestWin  = Math.max(bestWin, cur)
+    else                  bestLoss = Math.max(bestLoss, cur)
+  }
+
+  const isWin = streakType === 'TP'
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="stat-label">Current Streak</span>
+        <BarChart2 size={14} className="text-text-muted" />
+      </div>
+      <div className={clsx('font-display text-2xl font-bold', isWin ? 'text-accent-green' : 'text-accent-red')}>
+        {currentStreak} {isWin ? '🔥' : '❄️'}
+      </div>
+      <div className={clsx('font-body text-xs mt-0.5', isWin ? 'text-accent-green/70' : 'text-accent-red/70')}>
+        {isWin ? 'Win' : 'Loss'} streak
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="bg-accent-green/5 border border-accent-green/15 rounded-lg p-2 text-center">
+          <div className="font-display text-sm font-bold text-accent-green">{bestWin}</div>
+          <div className="font-body text-xs text-text-muted">Best Win</div>
+        </div>
+        <div className="bg-accent-red/5 border border-accent-red/15 rounded-lg p-2 text-center">
+          <div className="font-display text-sm font-bold text-accent-red">{bestLoss}</div>
+          <div className="font-body text-xs text-text-muted">Best Loss</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const {
     portfolioBalance, dailyPnl, dailyPnlPct,
-    weeklyPnl, winRate, avgRR, currentStreak,
-    positions, signals, marketFilter, setMarketFilter,
+    weeklyPnl, winRate, avgRR,
+    positions, tradeHistory, marketFilter, setMarketFilter,
     executionMode, accountMode, settings,
+    tradesExecutedToday,
   } = useStore()
 
-  const filteredSignals = signals.filter(s =>
-    marketFilter === 'ALL' || s.market === marketFilter.toLowerCase()
-  )
-  const totalOpenPnl = positions.reduce((s, p) => s + (p.pnl || 0), 0)
+  const totalOpenPnl   = positions.reduce((s, p) => s + (p.pnl || 0), 0)
+  const todayTrades    = tradeHistory.filter(t => {
+    const d = new Date(t.date)
+    const n = new Date()
+    return d.getFullYear() === n.getFullYear() &&
+           d.getMonth()    === n.getMonth() &&
+           d.getDate()     === n.getDate()
+  })
+  const todayCount     = todayTrades.length
+  const maxTrades      = settings.maxTradesPerDay || 3
+  const todayWins      = todayTrades.filter(t => t.status === 'TP').length
+  const todayLosses    = todayTrades.filter(t => t.status === 'SL').length
+  const todayPnl       = todayTrades.reduce((s, t) => s + t.pnl, 0)
+  const lossUsedPct    = Math.min(100, (Math.abs(Math.min(0, todayPnl)) / (portfolioBalance * settings.dailyLossLimit / 100 || 1)) * 100)
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -377,22 +245,17 @@ export default function Dashboard() {
         )}>
           <Activity size={11} />
           {executionMode}
-          {executionMode === 'FULL-AUTO' && (
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot ml-1" />
-          )}
+          {executionMode === 'FULL-AUTO' && <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot ml-1" />}
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-bg-elevated border-bg-border font-body text-xs text-text-secondary">
-          <span className={clsx('w-1.5 h-1.5 rounded-full live-dot',
-            accountMode === 'LIVE' ? 'bg-accent-green' : 'bg-accent-yellow')} />
+          <span className={clsx('w-1.5 h-1.5 rounded-full live-dot', accountMode === 'LIVE' ? 'bg-accent-green' : 'bg-accent-yellow')} />
           {accountMode} · Bybit
         </div>
         <div className="flex items-center gap-1 ml-auto">
           {['ALL','CRYPTO','FOREX'].map(f => (
             <button key={f} onClick={() => setMarketFilter(f)}
               className={clsx('px-2.5 py-1 rounded-lg font-body text-xs transition-all',
-                marketFilter === f
-                  ? 'bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan'
-                  : 'text-text-muted hover:text-text-secondary'
+                marketFilter === f ? 'bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan' : 'text-text-muted hover:text-text-secondary'
               )}>{f}</button>
           ))}
         </div>
@@ -408,8 +271,7 @@ export default function Dashboard() {
           <div className="font-display text-2xl font-bold text-text-primary">
             ${portfolioBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
           </div>
-          <div className={clsx('font-body text-xs mt-1',
-            dailyPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+          <div className={clsx('font-body text-xs mt-1', dailyPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
             {dailyPnl >= 0 ? '▲' : '▼'} ${Math.abs(dailyPnl).toFixed(2)} ({dailyPnlPct.toFixed(2)}%) today
           </div>
         </div>
@@ -423,15 +285,15 @@ export default function Dashboard() {
           value={`${totalOpenPnl >= 0 ? '+' : ''}$${totalOpenPnl.toFixed(2)}`}
           sub={`${positions.length} positions`} subColor="text-text-muted"
           icon={Activity} iconColor="bg-accent-cyan/10 text-accent-cyan" />
-        <StatCard label="Win Rate" value={`${winRate}%`}
-          sub="Last 30 trades" subColor="text-text-muted"
+        <StatCard label="Win Rate"
+          value={`${winRate}%`} sub="All trades" subColor="text-text-muted"
           icon={Target} iconColor="bg-accent-purple/10 text-accent-purple" />
-        <StatCard label="Avg RR" value={`1:${avgRR}`}
-          sub={`Streak: ${currentStreak} wins`} subColor="text-accent-yellow"
+        <StatCard label="Avg RR"
+          value={`1:${avgRR}`} sub={`Today: ${todayWins}W/${todayLosses}L`} subColor="text-accent-yellow"
           icon={BarChart2} iconColor="bg-accent-yellow/10 text-accent-yellow" />
       </div>
 
-      {/* Equity + ORB + Risk */}
+      {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 card p-4">
           <div className="flex items-center justify-between mb-4">
@@ -439,75 +301,62 @@ export default function Dashboard() {
               <h3 className="font-display text-sm font-bold text-text-primary">Equity Curve</h3>
               <p className="font-body text-xs text-text-muted">Last 20 trades</p>
             </div>
-            <div className={clsx('font-display text-sm font-bold',
-              weeklyPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-              +${weeklyPnl.toFixed(2)} <span className="font-body text-xs text-text-muted font-normal">7d</span>
+            <div className={clsx('font-display text-sm font-bold', weeklyPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+              {weeklyPnl >= 0 ? '+' : ''}${weeklyPnl.toFixed(2)} <span className="font-body text-xs text-text-muted font-normal">7d</span>
             </div>
           </div>
           <div className="h-36"><EquityChart /></div>
         </div>
+
         <div className="space-y-3">
           <OrbCountdown />
-          <div className="card p-4">
-            <div className="flex items-center justify-between mb-3">
-              <span className="stat-label">Daily Risk</span>
-              <Shield size={14} className="text-text-muted" />
-            </div>
-            <div className="space-y-2">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-body text-xs text-text-muted">Loss Used</span>
-                  <span className="font-body text-xs text-accent-green">0.8% / {settings.dailyLossLimit}%</span>
-                </div>
-                <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
-                  <div className="h-full bg-accent-green rounded-full" style={{ width: '40%' }} />
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-body text-xs text-text-muted">Trades Today</span>
-                  <span className="font-body text-xs text-accent-cyan">1 / {settings.maxTradesPerDay}</span>
-                </div>
-                <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
-                  <div className="h-full bg-accent-cyan rounded-full"
-                    style={{ width: `${(1 / settings.maxTradesPerDay) * 100}%` }} />
-                </div>
-              </div>
-            </div>
-          </div>
+          <StreakCard tradeHistory={tradeHistory} />
         </div>
       </div>
 
-      {/* Signals */}
-      <div>
+      {/* Daily Risk — with real trade count */}
+      <div className="card p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-display text-sm font-bold text-text-primary">
-            Live Signals
-            <span className="text-text-muted font-body font-normal text-xs ml-2">
-              {filteredSignals.length} active
-            </span>
-          </h3>
-          <div className="flex items-center gap-3">
-            {executionMode === 'FULL-AUTO' && (
-              <span className="flex items-center gap-1.5 font-body text-xs text-accent-green">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />
-                Auto-executing
-              </span>
-            )}
-            <span className="font-body text-xs text-text-muted">
-              ML ≥ {(settings.mlThreshold * 100).toFixed(0)}%
-            </span>
+          <span className="font-display text-sm font-bold text-text-primary">Daily Risk Monitor</span>
+          <Shield size={14} className="text-text-muted" />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="font-body text-xs text-text-muted">Daily Loss Used</span>
+              <span className={clsx('font-body text-xs font-semibold',
+                lossUsedPct > 75 ? 'text-accent-red' : lossUsedPct > 50 ? 'text-accent-yellow' : 'text-accent-green'
+              )}>{lossUsedPct.toFixed(1)}% / {settings.dailyLossLimit}%</span>
+            </div>
+            <div className="h-2 bg-bg-elevated rounded-full overflow-hidden">
+              <div className={clsx('h-full rounded-full transition-all',
+                lossUsedPct > 75 ? 'bg-accent-red' : lossUsedPct > 50 ? 'bg-accent-yellow' : 'bg-accent-green'
+              )} style={{ width: `${Math.min(lossUsedPct, 100)}%` }} />
+            </div>
+          </div>
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="font-body text-xs text-text-muted">Trades Today</span>
+              <span className={clsx('font-body text-xs font-semibold',
+                todayCount >= maxTrades ? 'text-accent-red' : 'text-accent-cyan'
+              )}>{todayCount} / {maxTrades}</span>
+            </div>
+            <div className="h-2 bg-bg-elevated rounded-full overflow-hidden">
+              <div className={clsx('h-full rounded-full transition-all',
+                todayCount >= maxTrades ? 'bg-accent-red' : 'bg-accent-cyan'
+              )} style={{ width: `${Math.min((todayCount / maxTrades) * 100, 100)}%` }} />
+            </div>
           </div>
         </div>
-        {filteredSignals.length === 0 ? (
-          <div className="card p-8 text-center">
-            <Activity size={24} className="text-text-muted mx-auto mb-2" />
-            <p className="font-body text-sm text-text-muted">Scanning markets — signals appear here when conditions are met</p>
-            <p className="font-body text-xs text-text-muted mt-1">Engine scans every 5 minutes</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            {filteredSignals.map(s => <SignalCard key={s.id} signal={s} />)}
+        {todayCount > 0 && (
+          <div className="mt-3 flex items-center gap-4">
+            <span className="font-body text-xs text-text-muted">Today:</span>
+            <span className="font-body text-xs text-accent-green">+{todayWins} wins</span>
+            <span className="font-body text-xs text-accent-red">-{todayLosses} losses</span>
+            <span className={clsx('font-body text-xs font-semibold ml-auto',
+              todayPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+              {todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}
+            </span>
           </div>
         )}
       </div>
@@ -518,15 +367,12 @@ export default function Dashboard() {
           <h3 className="font-display text-sm font-bold text-text-primary">
             Open Positions <span className="text-accent-cyan ml-1">{positions.length}</span>
           </h3>
-          <span className={clsx('font-display text-sm font-bold',
-            totalOpenPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+          <span className={clsx('font-display text-sm font-bold', totalOpenPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
             {totalOpenPnl >= 0 ? '+' : ''}${totalOpenPnl.toFixed(2)}
           </span>
         </div>
         {positions.length === 0 ? (
-          <div className="px-4 py-8 text-center font-body text-sm text-text-muted">
-            No open positions
-          </div>
+          <div className="px-4 py-8 text-center font-body text-sm text-text-muted">No open positions</div>
         ) : (
           positions.map(p => <PositionRow key={p.id} position={p} />)
         )}

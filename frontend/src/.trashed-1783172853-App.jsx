@@ -3,7 +3,6 @@ import Header from './components/shared/Header'
 import Sidebar from './components/shared/Sidebar'
 import PageTitle from './components/shared/PageTitle'
 import Dashboard from './components/dashboard/Dashboard'
-import Signals from './components/signals/Signals'
 import History from './components/history/History'
 import Statistics from './components/statistics/Statistics'
 import Settings from './components/settings/Settings'
@@ -12,23 +11,26 @@ import { useStore } from './store'
 import clsx from 'clsx'
 
 const PAGES = {
-  dashboard:  Dashboard,
-  signals:    Signals,
-  history:    History,
+  dashboard: Dashboard,
+  history: History,
   statistics: Statistics,
-  settings:   Settings,
+  settings: Settings,
 }
 
 function ConnectionBanner() {
-  const { backendConnected, livePrices } = useStore()
+  const { backendConnected, wsConnected, livePrices } = useStore()
   const hasPrices = Object.keys(livePrices).length > 0
-  if (backendConnected) return null
+
+  if (backendConnected && wsConnected) return null
+
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-      <div className="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-3 py-2 flex items-center gap-2">
-        <span className="w-1.5 h-1.5 rounded-full bg-accent-yellow live-dot" />
-        <span className="font-body text-xs text-accent-yellow">Connecting to backend...</span>
-      </div>
+      {!backendConnected && (
+        <div className="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-3 py-2 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent-yellow live-dot" />
+          <span className="font-body text-xs text-accent-yellow">Running on demo data</span>
+        </div>
+      )}
       {hasPrices && (
         <div className="bg-accent-green/10 border border-accent-green/30 rounded-lg px-3 py-2 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />
@@ -42,6 +44,8 @@ function ConnectionBanner() {
 export default function App() {
   const { activePage } = useStore()
   const PageComponent = PAGES[activePage] || Dashboard
+
+  // Start live data connection
   useLiveData()
 
   return (

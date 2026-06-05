@@ -1,77 +1,194 @@
-import React, { useState } from 'react'
-import { Search, Download, TrendingUp, TrendingDown, CheckCircle, XCircle, Clock, BarChart2 } from 'lucide-react'
+import React, { useState, useMemo } from 'react'
+import { Search, Download, Clock, ChevronLeft, ChevronRight, Calendar } from 'lucide-react'
 import { useStore } from '../../store'
-import { format, parseISO } from 'date-fns'
+import { format, parseISO, isToday, isSameDay, startOfDay, subDays } from 'date-fns'
 import clsx from 'clsx'
+
+const formatDate = (dateStr) => {
+  try {
+    const d = typeof dateStr === 'number' ? new Date(dateStr) : parseISO(dateStr)
+    return format(d, 'MMM d, yyyy · HH:mm:ss')
+  } catch { return String(dateStr) }
+}
+
+const toDate = (dateStr) => {
+  try {
+    return typeof dateStr === 'number' ? new Date(dateStr) : parseISO(dateStr)
+  } catch { return new Date() }
+}
 
 export default function History() {
   const { tradeHistory } = useStore()
-  const [search, setSearch] = useState('')
-  const [filter, setFilter] = useState('ALL')
-  const [sort, setSort]     = useState('date')
+  const [search, setSearch]         = useState('')
+  const [filter, setFilter]         = useState('ALL')
+  const [sort, setSort]             = useState('date')
+  const [selectedDate, setSelected] = useState(startOfDay(new Date()))
+  const [showCalendar, setShowCal]  = useState(false)
+  const [calMonth, setCalMonth]     = useState(new Date())
 
-  const filtered = tradeHistory
-    .filter(t => {
-      if (search && !t.symbol.toLowerCase().includes(search.toLowerCase())) return false
-      if (filter === 'TP')     return t.status === 'TP'
-      if (filter === 'SL')     return t.status === 'SL'
-      if (filter === 'CRYPTO') return t.market === 'crypto'
-      if (filter === 'FOREX')  return t.market === 'forex'
-      return true
+  // Only real trades (from backend) — filter out simulated ones
+  // Real trades have proper order IDs (not random generated IDs)
+  const realTrades = useMemo(() => {
+    return tradeHistory.filter(t => {
+      // Keep trades that came from the backend (have proper date strings or timestamps)
+      // Exclude mock trades which have randomly generated IDs with Math.random pattern
+      return t.id && (t.id.length > 10 || t.source === 'bybit_demo')
     })
-    .sort((a, b) => {
-      if (sort === 'pnl')  return b.pnl - a.pnl
-      if (sort === 'rr')   return parseFloat(b.rr) - parseFloat(a.rr)
-      return new Date(b.date) - new Date(a.date)
-    })
+  }, [tradeHistory])
 
-  const wins     = tradeHistory.filter(t => t.status === 'TP').length
-  const losses   = tradeHistory.filter(t => t.status === 'SL').length
-  const totalPnl = tradeHistory.reduce((s, t) => s + t.pnl, 0)
-  const avgWin   = tradeHistory.filter(t => t.pnl > 0).reduce((s, t) => s + t.pnl, 0) / (wins || 1)
-  const avgLoss  = Math.abs(tradeHistory.filter(t => t.pnl < 0).reduce((s, t) => s + t.pnl, 0)) / (losses || 1)
+  // Filter by selected date
+  const dayTrades = useMemo(() => {
+    return realTrades.filter(t => isSameDay(toDate(t.date), selectedDate))
+  }, [realTrades, selectedDate])
 
-  const formatDate = (dateStr) => {
-    try {
-      const d = typeof dateStr === 'string' ? parseISO(dateStr) : new Date(dateStr)
-      return format(d, 'MMM d, yyyy · HH:mm:ss')
-    } catch { return dateStr }
-  }
+  // Apply search + status filter
+  const filtered = useMemo(() => {
+    return dayTrades
+      .filter(t => {
+        if (search && !t.symbol?.toLowerCase().includes(search.toLowerCase())) return false
+        if (filter === 'TP')     return t.status === 'TP'
+        if (filter === 'SL')     return t.status === 'SL'
+        if (filter === 'LONG')   return t.direction === 'LONG'
+        if (filter === 'SHORT')  return t.direction === 'SHORT'
+        return true
+      })
+      .sort((a, b) => {
+        if (sort === 'pnl') return b.pnl - a.pnl
+        return toDate(b.date) - toDate(a.date)
+      })
+  }, [dayTrades, search, filter, sort])
 
-  const exportCSV = () => {
-    const rows = [
-      ['Date & Time', 'Symbol', 'Direction', 'Status', 'P&L', 'RR', 'ML Score', 'Duration', 'Market'],
-      ...filtered.map(t => [
-        formatDate(t.date), t.symbol, t.direction, t.status,
-        t.pnl.toFixed(2), t.status === 'TP' ? `1:${t.rr}` : '—',
-        `${(t.mlScore * 100).toFixed(0)}%`, t.duration, t.market
-      ])
-    ]
-    const csv = rows.map(r => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href = url; a.download = 'smartedge-history.csv'; a.click()
-    URL.revokeObjectURL(url)
-  }
+  // Days that have trades (for calendar dots)
+  const datesWithTrades = useMemo(() => {
+    return new Set(realTrades.map(t => format(toDate(t.date), 'yyyy-MM-dd')))
+  }, [realTrades])
+
+  const dayPnl   = dayTrades.reduce((s, t) => s + t.pnl, 0)
+  const dayWins  = dayTrades.filter(t => t.status === 'TP').length
+  const dayLoss  = dayTrades.filter(t => t.status === 'SL').length
+
+  // Calendar helpers
+  const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate()
+  const firstDay    = (y, m) => new Date(y, m, 1).getDay()
+  const cy = calMonth.getFullYear()
+  const cm = calMonth.getMonth()
 
   return (
     <div className="space-y-5 animate-fade-in">
 
-      {/* Summary Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Trades', value: tradeHistory.length, sub: `${wins}W / ${losses}L`, color: 'text-text-primary' },
-          { label: 'Total P&L',    value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`, sub: 'All time', color: totalPnl >= 0 ? 'text-accent-green' : 'text-accent-red' },
-          { label: 'Avg Win',      value: `+$${avgWin.toFixed(0)}`,  sub: 'Per winning trade', color: 'text-accent-green' },
-          { label: 'Avg Loss',     value: `-$${avgLoss.toFixed(0)}`, sub: 'Per losing trade',  color: 'text-accent-red' },
-        ].map(s => (
-          <div key={s.label} className="card p-4">
-            <div className="stat-label mb-2">{s.label}</div>
-            <div className={clsx('font-display text-xl font-bold', s.color)}>{s.value}</div>
-            <div className="font-body text-xs text-text-muted mt-0.5">{s.sub}</div>
+      {/* Date selector bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Quick date pills */}
+        {[0, 1, 2, 3].map(daysAgo => {
+          const d = startOfDay(subDays(new Date(), daysAgo))
+          const label = daysAgo === 0 ? 'Today' : daysAgo === 1 ? 'Yesterday' : format(d, 'MMM d')
+          const active = isSameDay(d, selectedDate)
+          const hasTrades = datesWithTrades.has(format(d, 'yyyy-MM-dd'))
+          return (
+            <button key={daysAgo} onClick={() => setSelected(d)}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-body text-xs transition-all border',
+                active ? 'bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan'
+                : 'bg-bg-card border-bg-border text-text-muted hover:text-text-secondary'
+              )}>
+              {label}
+              {hasTrades && <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />}
+            </button>
+          )
+        })}
+
+        {/* Calendar toggle */}
+        <button onClick={() => setShowCal(!showCalendar)}
+          className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-body text-xs border transition-all ml-auto',
+            showCalendar ? 'bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan' : 'bg-bg-card border-bg-border text-text-muted'
+          )}>
+          <Calendar size={13} />
+          {format(selectedDate, 'MMM d, yyyy')}
+        </button>
+      </div>
+
+      {/* Calendar dropdown */}
+      {showCalendar && (
+        <div className="card p-4 animate-slide-up">
+          <div className="flex items-center justify-between mb-4">
+            <button onClick={() => setCalMonth(new Date(cy, cm - 1))}
+              className="p-1.5 hover:bg-bg-elevated rounded-lg transition-colors">
+              <ChevronLeft size={16} className="text-text-secondary" />
+            </button>
+            <span className="font-display text-sm font-bold text-text-primary">
+              {format(calMonth, 'MMMM yyyy')}
+            </span>
+            <button onClick={() => setCalMonth(new Date(cy, cm + 1))}
+              className="p-1.5 hover:bg-bg-elevated rounded-lg transition-colors">
+              <ChevronRight size={16} className="text-text-secondary" />
+            </button>
           </div>
-        ))}
+          <div className="grid grid-cols-7 gap-1 mb-2">
+            {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+              <div key={d} className="text-center font-body text-xs text-text-muted py-1">{d}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {Array.from({ length: firstDay(cy, cm) }, (_, i) => (
+              <div key={`e${i}`} />
+            ))}
+            {Array.from({ length: daysInMonth(cy, cm) }, (_, i) => {
+              const day     = new Date(cy, cm, i + 1)
+              const dayStr  = format(day, 'yyyy-MM-dd')
+              const hasTr   = datesWithTrades.has(dayStr)
+              const isActive = isSameDay(day, selectedDate)
+              const isFuture = day > new Date()
+              return (
+                <button key={i} disabled={isFuture}
+                  onClick={() => { setSelected(startOfDay(day)); setShowCal(false) }}
+                  className={clsx(
+                    'relative flex flex-col items-center justify-center h-8 rounded-lg font-body text-xs transition-all',
+                    isFuture ? 'text-text-muted cursor-not-allowed opacity-30'
+                    : isActive ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/40'
+                    : 'hover:bg-bg-elevated text-text-secondary'
+                  )}>
+                  {i + 1}
+                  {hasTr && !isActive && (
+                    <span className="absolute bottom-0.5 w-1 h-1 rounded-full bg-accent-green" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Day summary */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="card p-4">
+          <div className="stat-label mb-2">Trades</div>
+          <div className="font-display text-xl font-bold text-text-primary">{dayTrades.length}</div>
+          <div className="font-body text-xs text-text-muted">{dayWins}W / {dayLoss}L</div>
+        </div>
+        <div className="card p-4">
+          <div className="stat-label mb-2">Day P&L</div>
+          <div className={clsx('font-display text-xl font-bold', dayPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+            {dayPnl >= 0 ? '+' : ''}${dayPnl.toFixed(2)}
+          </div>
+          <div className="font-body text-xs text-text-muted">{format(selectedDate, 'MMM d, yyyy')}</div>
+        </div>
+        <div className="card p-4">
+          <div className="stat-label mb-2">Win Rate</div>
+          <div className={clsx('font-display text-xl font-bold',
+            dayTrades.length === 0 ? 'text-text-muted'
+            : dayWins / dayTrades.length >= 0.5 ? 'text-accent-green' : 'text-accent-red'
+          )}>
+            {dayTrades.length === 0 ? '—' : `${((dayWins / dayTrades.length) * 100).toFixed(0)}%`}
+          </div>
+          <div className="font-body text-xs text-text-muted">Day win rate</div>
+        </div>
+        <div className="card p-4">
+          <div className="stat-label mb-2">Best Trade</div>
+          <div className="font-display text-xl font-bold text-accent-green">
+            {dayTrades.length === 0 ? '—' : `+$${Math.max(...dayTrades.map(t => t.pnl)).toFixed(2)}`}
+          </div>
+          <div className="font-body text-xs text-text-muted">Single trade</div>
+        </div>
       </div>
 
       {/* Controls */}
@@ -82,53 +199,47 @@ export default function History() {
             placeholder="Search symbol..."
             className="bg-transparent font-body text-sm text-text-primary placeholder-text-muted outline-none flex-1" />
         </div>
-        <div className="flex items-center gap-1 bg-bg-card border border-bg-border rounded-lg p-1">
-          {['ALL','TP','SL','CRYPTO','FOREX'].map(f => (
+        <div className="flex gap-1 bg-bg-card border border-bg-border rounded-lg p-1">
+          {['ALL','TP','SL','LONG','SHORT'].map(f => (
             <button key={f} onClick={() => setFilter(f)}
               className={clsx('px-2.5 py-1 rounded-md font-body text-xs transition-all',
-                filter === f
-                  ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20'
-                  : 'text-text-muted hover:text-text-secondary'
+                filter === f ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20' : 'text-text-muted hover:text-text-secondary'
               )}>{f}</button>
           ))}
         </div>
         <select value={sort} onChange={e => setSort(e.target.value)}
           className="bg-bg-card border border-bg-border rounded-lg px-3 py-2 font-body text-sm text-text-secondary outline-none">
-          <option value="date">Sort: Date</option>
+          <option value="date">Sort: Time</option>
           <option value="pnl">Sort: P&L</option>
-          <option value="rr">Sort: RR</option>
         </select>
-        <button onClick={exportCSV} className="btn-ghost flex items-center gap-1.5">
-          <Download size={13} />
-          <span className="hidden sm:inline">Export CSV</span>
-        </button>
       </div>
 
       {/* Table */}
       <div className="card overflow-hidden">
         <div className="grid grid-cols-12 gap-2 px-4 py-2.5 border-b border-bg-border bg-bg-elevated/50">
           {[
-            { label: 'Symbol',     cls: 'col-span-2' },
-            { label: 'Dir',        cls: 'col-span-1' },
-            { label: 'Result',     cls: 'col-span-1' },
-            { label: 'P&L',        cls: 'col-span-2' },
-            { label: 'RR',         cls: 'col-span-1' },
-            { label: 'ML',         cls: 'col-span-1 hidden lg:block' },
-            { label: 'Duration',   cls: 'col-span-1 hidden lg:block' },
-            { label: 'Date & Time',cls: 'col-span-3 hidden md:block' },
+            { label: 'Symbol',      cls: 'col-span-2' },
+            { label: 'Direction',   cls: 'col-span-1' },
+            { label: 'Result',      cls: 'col-span-1' },
+            { label: 'P&L',         cls: 'col-span-2' },
+            { label: 'RR',          cls: 'col-span-1' },
+            { label: 'ML',          cls: 'col-span-1 hidden lg:block' },
+            { label: 'Duration',    cls: 'col-span-1 hidden lg:block' },
+            { label: 'Time',        cls: 'col-span-3 hidden md:block' },
           ].map(h => (
-            <div key={h.label} className={clsx('font-body text-xs text-text-muted uppercase tracking-wider', h.cls)}>
-              {h.label}
-            </div>
+            <div key={h.label} className={clsx('font-body text-xs text-text-muted uppercase tracking-wider', h.cls)}>{h.label}</div>
           ))}
         </div>
 
-        <div className="divide-y divide-bg-border/40 max-h-[60vh] overflow-y-auto">
+        <div className="divide-y divide-bg-border/40 max-h-[55vh] overflow-y-auto">
           {filtered.length === 0 ? (
-            <div className="px-4 py-8 text-center font-body text-sm text-text-muted">No trades found</div>
+            <div className="px-4 py-12 text-center">
+              <Clock size={24} className="text-text-muted mx-auto mb-2" />
+              <p className="font-body text-sm text-text-muted">No trades on {format(selectedDate, 'MMMM d, yyyy')}</p>
+              <p className="font-body text-xs text-text-muted mt-1">Green dots on the calendar show days with trades</p>
+            </div>
           ) : filtered.map(trade => (
-            <div key={trade.id}
-              className="grid grid-cols-12 gap-2 px-4 py-3 hover:bg-bg-elevated/40 transition-colors items-center">
+            <div key={trade.id} className="grid grid-cols-12 gap-2 px-4 py-3 hover:bg-bg-elevated/40 transition-colors items-center">
               <div className="col-span-2">
                 <div className="font-display text-xs font-bold text-text-primary">{trade.symbol}</div>
                 <div className="font-body text-xs text-text-muted capitalize">{trade.market}</div>
@@ -136,18 +247,15 @@ export default function History() {
               <div className="col-span-1">
                 <span className={clsx('font-body text-xs font-semibold',
                   trade.direction === 'LONG' ? 'text-accent-green' : 'text-accent-red')}>
-                  {trade.direction === 'LONG' ? '▲ L' : '▼ S'}
+                  {trade.direction === 'LONG' ? '▲' : '▼'}
                 </span>
               </div>
               <div className="col-span-1">
-                <span className={clsx(
-                  'font-body text-xs font-semibold px-1.5 py-0.5 rounded border',
+                <span className={clsx('font-body text-xs font-semibold px-1.5 py-0.5 rounded border',
                   trade.status === 'TP'
                     ? 'bg-accent-green/10 text-accent-green border-accent-green/20'
                     : 'bg-accent-red/10 text-accent-red border-accent-red/20'
-                )}>
-                  {trade.status}
-                </span>
+                )}>{trade.status}</span>
               </div>
               <div className="col-span-2">
                 <span className={clsx('font-display text-sm font-bold',
@@ -161,8 +269,7 @@ export default function History() {
                 </span>
               </div>
               <div className="col-span-1 hidden lg:block">
-                <span className={clsx('font-body text-xs',
-                  trade.mlScore >= 0.75 ? 'text-accent-green' : 'text-accent-yellow')}>
+                <span className={clsx('font-body text-xs', trade.mlScore >= 0.75 ? 'text-accent-green' : 'text-accent-yellow')}>
                   {(trade.mlScore * 100).toFixed(0)}%
                 </span>
               </div>
@@ -173,22 +280,20 @@ export default function History() {
                 </div>
               </div>
               <div className="col-span-3 hidden md:block">
-                <span className="font-body text-xs text-text-secondary">
-                  {formatDate(trade.date)}
-                </span>
+                <span className="font-body text-xs text-text-secondary">{formatDate(trade.date)}</span>
               </div>
             </div>
           ))}
         </div>
 
-        {/* Footer */}
-        <div className="px-4 py-2.5 border-t border-bg-border bg-bg-elevated/30 flex items-center justify-between">
-          <span className="font-body text-xs text-text-muted">{filtered.length} trades</span>
-          <span className={clsx('font-display text-sm font-bold',
-            totalPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-            Net: {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
-          </span>
-        </div>
+        {filtered.length > 0 && (
+          <div className="px-4 py-2.5 border-t border-bg-border bg-bg-elevated/30 flex items-center justify-between">
+            <span className="font-body text-xs text-text-muted">{filtered.length} trades</span>
+            <span className={clsx('font-display text-sm font-bold', dayPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+              Day net: {dayPnl >= 0 ? '+' : ''}${dayPnl.toFixed(2)}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
