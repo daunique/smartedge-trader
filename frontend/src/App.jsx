@@ -2,6 +2,7 @@ import React from 'react'
 import Header from './components/shared/Header'
 import Sidebar from './components/shared/Sidebar'
 import PageTitle from './components/shared/PageTitle'
+import PWABanner from './components/shared/PWABanner'
 import Dashboard from './components/dashboard/Dashboard'
 import Signals from './components/signals/Signals'
 import History from './components/history/History'
@@ -20,21 +21,14 @@ const PAGES = {
 }
 
 function ConnectionBanner() {
-  const { backendConnected, livePrices } = useStore()
-  const hasPrices = Object.keys(livePrices).length > 0
+  const { backendConnected } = useStore()
   if (backendConnected) return null
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    <div className="fixed bottom-4 right-4 z-50">
       <div className="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-3 py-2 flex items-center gap-2">
         <span className="w-1.5 h-1.5 rounded-full bg-accent-yellow live-dot" />
-        <span className="font-body text-xs text-accent-yellow">Connecting to backend...</span>
+        <span className="font-body text-xs text-accent-yellow">Connecting...</span>
       </div>
-      {hasPrices && (
-        <div className="bg-accent-green/10 border border-accent-green/30 rounded-lg px-3 py-2 flex items-center gap-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />
-          <span className="font-body text-xs text-accent-green">Live prices connected</span>
-        </div>
-      )}
     </div>
   )
 }
@@ -55,6 +49,7 @@ export default function App() {
         </div>
       </main>
       <ConnectionBanner />
+      <PWABanner />
     </div>
   )
 }
