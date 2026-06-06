@@ -314,6 +314,41 @@ class AutoExecutor:
 
     def stop(self): self.running = False
 
+    async def _sync_trades_today(self):
+        """Sync actual trade count from Bybit to prevent exceeding daily limit"""
+        import httpx, hmac, hashlib, time, json, os
+        try:
+            ts          = str(int(time.time() * 1000))
+            recv_window = '20000'
+            params      = {'category': 'linear', 'limit': '50'}
+            param_str   = ts + os.getenv('BYBIT_API_KEY','') + recv_window + '&'.join(f'{k}={v}' for k,v in sorted(params.items()))
+            sig = hmac.new(os.getenv('BYBIT_API_SECRET','').encode(), param_str.encode(), hashlib.sha256).hexdigest()
+            headers = {
+                'X-BAPI-API-KEY': os.getenv('BYBIT_API_KEY',''),
+                'X-BAPI-TIMESTAMP': ts,
+                'X-BAPI-SIGN': sig,
+                'X-BAPI-RECV-WINDOW': recv_window,
+            }
+            from datetime import datetime, timezone
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get('https://api-demo.bybit.com/v5/order/history', params=params, headers=headers)
+                data = r.json()
+            if data.get('retCode') == 0:
+                today = datetime.now(timezone.utc).date().isoformat()
+                count = 0
+                for o in data['result'].get('list', []):
+                    created = o.get('createdTime') or '0'
+                    try:
+                        order_date = datetime.utcfromtimestamp(int(created)/1000).date().isoformat()
+                    except:
+                        order_date = ''
+                    if order_date == today and o.get('orderStatus') in ('Filled','PartiallyFilled','New'):
+                        count += 1
+                self.trades_today = count
+                print(f'[EXECUTOR] Synced trades today: {count}')
+        except Exception as e:
+            print(f'[EXECUTOR] Sync error: {e}')
+
     def reset_daily(self):
         self.trades_today = 0
         self.daily_loss   = 0.0
