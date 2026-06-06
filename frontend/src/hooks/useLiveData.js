@@ -19,15 +19,30 @@ const normalizeSignal = (s) => ({
   timestamp: new Date(s.timestamp).getTime(),
 })
 
-const normalizeTrade = (t) => ({
-  id: t.id, symbol: t.symbol, direction: t.direction,
-  pnl: t.pnl || 0, runningPnl: t.runningPnl || 0,
-  rr: t.rr || '0', mlScore: t.mlScore || t.ml_score || 0,
-  status: t.status,
-  date: t.date || t.createdTime || new Date().toISOString(),
-  market: t.market || 'crypto', duration: t.duration || '—',
-  source: 'bybit_demo',
-})
+const normalizeTrade = (t) => {
+  // Handle Bybit timestamp formats: ms string, ISO string, or number
+  let date = t.date || t.createdTime || t.create_time || null
+  if (date) {
+    const num = Number(date)
+    if (!isNaN(num) && num > 1000000000000) {
+      date = new Date(num).toISOString()
+    } else if (!isNaN(num) && num > 1000000000) {
+      date = new Date(num * 1000).toISOString()
+    }
+  }
+  if (!date || date === 'null' || date === 'undefined') {
+    date = new Date().toISOString()
+  }
+  return {
+    id: t.id, symbol: t.symbol, direction: t.direction,
+    pnl: t.pnl || 0, runningPnl: t.runningPnl || 0,
+    rr: t.rr || '0', mlScore: t.mlScore || t.ml_score || 0,
+    status: t.status || 'SL',
+    date,
+    market: t.market || 'crypto', duration: t.duration || '—',
+    source: 'bybit_demo',
+  }
+}
 
 export function useLiveData() {
   const {

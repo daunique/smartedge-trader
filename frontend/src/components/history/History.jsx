@@ -4,18 +4,24 @@ import { useStore } from '../../store'
 import { format, parseISO, isToday, isSameDay, startOfDay, subDays } from 'date-fns'
 import clsx from 'clsx'
 
+const safeDate = (d) => {
+  try {
+    if (!d) return new Date()
+    const num = Number(d)
+    if (!isNaN(num) && num > 1000000000000) return new Date(num)
+    if (!isNaN(num) && num > 1000000000) return new Date(num * 1000)
+    const parsed = new Date(d)
+    return isNaN(parsed.getTime()) ? new Date() : parsed
+  } catch { return new Date() }
+}
+
 const formatDate = (dateStr) => {
   try {
-    const d = typeof dateStr === 'number' ? new Date(dateStr) : parseISO(dateStr)
-    return format(d, 'MMM d, yyyy · HH:mm:ss')
+    return format(safeDate(dateStr), 'MMM d, yyyy · HH:mm:ss')
   } catch { return String(dateStr) }
 }
 
-const toDate = (dateStr) => {
-  try {
-    return typeof dateStr === 'number' ? new Date(dateStr) : parseISO(dateStr)
-  } catch { return new Date() }
-}
+const toDate = (dateStr) => safeDate(dateStr)
 
 export default function History() {
   const { tradeHistory } = useStore()

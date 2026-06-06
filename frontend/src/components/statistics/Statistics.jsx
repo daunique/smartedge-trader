@@ -13,7 +13,14 @@ const TOOLTIP = {
 }
 
 const toDate = (d) => {
-  try { return typeof d === 'number' ? new Date(d) : parseISO(d) } catch { return new Date() }
+  try {
+    if (!d) return new Date()
+    const num = Number(d)
+    if (!isNaN(num) && num > 1000000000000) return new Date(num)
+    if (!isNaN(num) && num > 1000000000) return new Date(num * 1000)
+    const parsed = typeof d === 'string' ? new Date(d) : new Date(d)
+    return isNaN(parsed.getTime()) ? new Date() : parsed
+  } catch { return new Date() }
 }
 
 function KpiCard({ label, value, sub, color }) {
