@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import {
   TrendingUp, TrendingDown, Activity, Target, Zap,
-  Clock, BarChart2, Shield, TrendingUp as WinIcon
+  Clock, BarChart2, Shield
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useStore } from '../../store'

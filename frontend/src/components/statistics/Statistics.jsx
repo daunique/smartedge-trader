@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, Cell, PieChart, Pie, Legend, LineChart, Line
+  ResponsiveContainer, Cell, PieChart, Pie, Legend
 } from 'recharts'
 import { useStore } from '../../store'
 import { format, parseISO, subDays, startOfDay } from 'date-fns'

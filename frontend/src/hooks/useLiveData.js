@@ -34,7 +34,7 @@ export function useLiveData() {
     setBackendConnected, setWsConnected,
     updateLivePrices, refreshPortfolio,
     refreshPositions, refreshSignals, refreshHistory,
-    accountMode, settings, signals: currentSignals,
+    accountMode, settings,
   } = useStore()
 
   const pollRef    = useRef(null)
