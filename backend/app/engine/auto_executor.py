@@ -132,14 +132,20 @@ async def run_safety_checks(settings: dict, trades_today: int, daily_loss: float
 # ── Order executor ────────────────────────────────────────────────
 class AutoExecutor:
     def __init__(self):
+        # Defaults aligned to the walk-forward-backtested config (see
+        # Full_SixMonth_Report.md / Fifty_Dollar_Walkforward_Report.md).
+        # minRR/mlThreshold previously stricter here than in signal_engine.py's
+        # own defaults (3.0/0.65 vs 2.0/0.55), which meant the executor was
+        # silently rejecting signals the engine had already approved — fixed
+        # so both files agree with what was actually backtested.
         self.settings = {
-            "riskPerTrade":    1.0,
-            "minRR":           3.0,
+            "riskPerTrade":    2.0,
+            "minRR":           2.0,
             "maxTradesPerDay": 3,
             "dailyLossLimit":  2.0,
             "beTrigger":       1.0,
             "trailingStop":    True,
-            "mlThreshold":     0.65,
+            "mlThreshold":     0.55,
         }
         self.mode          = "SEMI-AUTO"  # MANUAL | SEMI-AUTO | FULL-AUTO
         self.paused        = False
@@ -163,6 +169,12 @@ class AutoExecutor:
 
         if self.paused:
             return {"success": False, "reason": "System paused"}
+
+        # Sync actual fill count from Bybit before checking limits — trades_today
+        # was previously only tracked in-memory and reset to 0 on every server
+        # restart, so the daily cap could be silently bypassed by a redeploy.
+        # This was defined but never called; now it runs before every execution.
+        await self._sync_trades_today()
 
         # Safety checks
         check = await run_safety_checks(

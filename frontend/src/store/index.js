@@ -1,15 +1,19 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+// Aligned to the walk-forward-backtested config (Full_SixMonth_Report.md).
+// Previously riskPerTrade:1/minRR:3/mlThreshold:0.65 here disagreed with the
+// backend and with each other — frontend would silently overwrite backend
+// fixes on first settings save. Now both sides match what was backtested.
 const DEFAULT_SETTINGS = {
-  riskPerTrade:    1,
-  minRR:           3,
+  riskPerTrade:    2,
+  minRR:           2,
   maxTradesPerDay: 3,
   dailyLossLimit:  2,
   orbTimeframe:    15,
   beTrigger:       1,
   trailingStop:    true,
-  mlThreshold:     0.65,
+  mlThreshold:     0.55,
   notifications:   true,
   mobileAlerts:    true,
   apiKey:          '',

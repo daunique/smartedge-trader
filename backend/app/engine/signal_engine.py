@@ -10,16 +10,17 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+# Restricted to exactly the 6 symbols validated in the walk-forward backtest
+# (AVAX/LINK were previously included live but were never backtested — removed)
 ALL_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
-    "BNBUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
+    "BNBUSDT", "DOGEUSDT",
 ]
 
 SYMBOL_DISPLAY = {
     "BTCUSDT": "BTC/USDT",  "ETHUSDT": "ETH/USDT",
     "SOLUSDT": "SOL/USDT",  "XRPUSDT": "XRP/USDT",
     "BNBUSDT": "BNB/USDT",  "DOGEUSDT":"DOGE/USDT",
-    "AVAXUSDT":"AVAX/USDT", "LINKUSDT":"LINK/USDT",
 }
 
 TESTING_MODE = os.getenv("TESTING_MODE", "true").lower() == "true"
