@@ -16,19 +16,32 @@ from dataclasses import asdict
 
 load_dotenv()
 
-DEMO_BASE  = "https://api-demo.bybit.com"
-API_KEY    = os.getenv("BYBIT_API_KEY", "")
-API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+DEMO_BASE = "https://api-demo.bybit.com"
+
+# Bug fix: API_KEY/API_SECRET were previously read once at module import time
+# and cached as module-level constants. Any credential rotation in Render's
+# environment required a full process restart to take effect — and if the
+# process happened to import this module before env injection completed,
+# it would silently cache an empty or stale value for the process lifetime,
+# producing "API key is invalid" even with genuinely fresh, correct keys in
+# the dashboard. Now read fresh from the environment on every single call.
+def get_api_key() -> str:
+    return os.getenv("BYBIT_API_KEY", "")
+
+def get_api_secret() -> str:
+    return os.getenv("BYBIT_API_SECRET", "")
 
 def sign_headers(params: dict) -> dict:
+    api_key    = get_api_key()
+    api_secret = get_api_secret()
     ts          = str(int(time.time() * 1000))
     recv_window = "20000"
-    param_str   = ts + API_KEY + recv_window + "&".join(
+    param_str   = ts + api_key + recv_window + "&".join(
         f"{k}={v}" for k, v in sorted(params.items())
     )
-    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     return {
-        "X-BAPI-API-KEY":     API_KEY,
+        "X-BAPI-API-KEY":     api_key,
         "X-BAPI-TIMESTAMP":   ts,
         "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
@@ -41,13 +54,15 @@ async def bybit_get(path: str, params: dict = {}) -> dict:
         return r.json()
 
 async def bybit_post(path: str, body: dict = {}) -> dict:
+    api_key     = get_api_key()
+    api_secret  = get_api_secret()
     ts          = str(int(time.time() * 1000))
     recv_window = "20000"
     body_str    = json.dumps(body)
-    param_str   = ts + API_KEY + recv_window + body_str
-    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    param_str   = ts + api_key + recv_window + body_str
+    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     headers = {
-        "X-BAPI-API-KEY":     API_KEY,
+        "X-BAPI-API-KEY":     api_key,
         "X-BAPI-TIMESTAMP":   ts,
         "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
@@ -140,7 +155,7 @@ async def daily_reset():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
-    print(f"   API Key set: {bool(API_KEY)}")
+    print(f"   API Key set: {bool(get_api_key())}")
     signal_engine.set_broadcast(manager.broadcast)
     auto_executor.set_broadcast(manager.broadcast)
     asyncio.create_task(signal_engine.run())
@@ -169,7 +184,7 @@ async def health():
         "version": "1.0.0",
         "execution_mode": auto_executor.mode,
         "paused": auto_executor.paused,
-        "api_key_set": bool(API_KEY),
+        "api_key_set": bool(get_api_key()),
         "signals_active": len(signal_engine.get_active()),
         "trades_today": auto_executor.trades_today,
         "endpoint": DEMO_BASE,

@@ -9,19 +9,29 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-DEMO_BASE  = "https://api-demo.bybit.com"
-API_KEY    = os.getenv("BYBIT_API_KEY", "")
-API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+DEMO_BASE = "https://api-demo.bybit.com"
+
+# Bug fix: same module-level credential caching issue as main.py — reading
+# os.getenv() once at import time meant a Bybit key rotation in Render's
+# environment would not take effect even after a redeploy, if the module
+# had already cached the old (or empty) value. Now read fresh on every call.
+def get_api_key() -> str:
+    return os.getenv("BYBIT_API_KEY", "")
+
+def get_api_secret() -> str:
+    return os.getenv("BYBIT_API_SECRET", "")
 
 # ── Signed requests ───────────────────────────────────────────────
 async def bybit_post(path: str, body: dict) -> dict:
+    api_key     = get_api_key()
+    api_secret  = get_api_secret()
     ts          = str(int(time.time() * 1000))
     recv_window = "20000"
     body_str    = json.dumps(body)
-    param_str   = ts + API_KEY + recv_window + body_str
-    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    param_str   = ts + api_key + recv_window + body_str
+    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     headers = {
-        "X-BAPI-API-KEY":     API_KEY,
+        "X-BAPI-API-KEY":     api_key,
         "X-BAPI-TIMESTAMP":   ts,
         "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
@@ -32,14 +42,16 @@ async def bybit_post(path: str, body: dict) -> dict:
         return r.json()
 
 async def bybit_get(path: str, params: dict = {}) -> dict:
+    api_key     = get_api_key()
+    api_secret  = get_api_secret()
     ts          = str(int(time.time() * 1000))
     recv_window = "20000"
-    param_str   = ts + API_KEY + recv_window + "&".join(
+    param_str   = ts + api_key + recv_window + "&".join(
         f"{k}={v}" for k, v in sorted(params.items())
     )
-    sig = hmac.new(API_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
     headers = {
-        "X-BAPI-API-KEY":     API_KEY,
+        "X-BAPI-API-KEY":     api_key,
         "X-BAPI-TIMESTAMP":   ts,
         "X-BAPI-SIGN":        sig,
         "X-BAPI-RECV-WINDOW": recv_window,
