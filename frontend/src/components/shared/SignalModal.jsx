@@ -29,11 +29,10 @@ export default function SignalModal({ signal, onClose, onExecute, executionMode 
   }
 
   const confluences = [
-    { label: 'VWAP Alignment', met: signal.vwapAbove === isLong, desc: isLong ? 'Price above VWAP — bullish' : 'Price below VWAP — bearish' },
-    { label: 'ORB Breakout',   met: signal.orbBreak, desc: 'Price broke opening range boundary' },
-    { label: 'ML Filter',      met: signal.confidence >= 65, desc: `Confidence score: ${signal.confidence}%` },
-    { label: 'Trending Regime',met: signal.regime === 'TRENDING', desc: `Current regime: ${signal.regime}` },
-    { label: 'Min RR Met',     met: parseFloat(rrNum) >= 2, desc: `R:R ratio: 1:${rrNum}` },
+    { label: 'Trend Filter',  met: true, desc: `SMA-cross trend: ${signal.trend === 'BULL' ? 'bullish' : 'bearish'}` },
+    { label: 'Entry Trigger', met: true, desc: signal.entryTrigger || 'candle-structure trigger fired' },
+    { label: 'Volatility OK', met: signal.volOk !== false, desc: signal.volOk === false ? 'in the top 40% ATR range — should not have fired' : 'not in the top 40% ATR range' },
+    { label: 'Min RR Met',    met: parseFloat(rrNum) >= 3, desc: `R:R ratio: 1:${rrNum}` },
   ]
 
   const confluenceScore = confluences.filter(c => c.met).length
@@ -62,7 +61,7 @@ export default function SignalModal({ signal, onClose, onExecute, executionMode 
                 <span className={clsx('font-body text-xs font-semibold px-2 py-0.5 rounded border',
                   isLong ? 'badge-long' : 'badge-short')}>{signal.direction}</span>
               </div>
-              <p className="font-body text-xs text-text-muted">{signal.timeframe} · {signal.market?.toUpperCase()} · {signal.regime}</p>
+              <p className="font-body text-xs text-text-muted">{signal.timeframe} · {signal.market?.toUpperCase()} · {signal.trend === 'BULL' ? 'Bullish trend' : 'Bearish trend'}</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-bg-elevated transition-colors">
@@ -71,27 +70,6 @@ export default function SignalModal({ signal, onClose, onExecute, executionMode 
         </div>
 
         <div className="p-4 space-y-4">
-
-          {/* ML Score */}
-          <div className="card-elevated p-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-body text-xs text-text-muted uppercase tracking-wider">ML Confidence</span>
-              <span className={clsx('font-display text-lg font-bold',
-                signal.confidence >= 75 ? 'text-accent-green'
-                : signal.confidence >= 60 ? 'text-accent-yellow' : 'text-accent-red'
-              )}>{signal.confidence}%</span>
-            </div>
-            <div className="h-2 bg-bg-primary rounded-full overflow-hidden">
-              <div className={clsx('h-full rounded-full transition-all duration-700',
-                signal.confidence >= 75 ? 'bg-accent-green'
-                : signal.confidence >= 60 ? 'bg-accent-yellow' : 'bg-accent-red'
-              )} style={{ width: `${signal.confidence}%` }} />
-            </div>
-            <div className="flex justify-between mt-1">
-              <span className="font-body text-xs text-text-muted">Min: 55%</span>
-              <span className="font-body text-xs text-text-muted">Target: 75%+</span>
-            </div>
-          </div>
 
           {/* Price Levels */}
           <div>
@@ -138,9 +116,8 @@ export default function SignalModal({ signal, onClose, onExecute, executionMode 
             <div className="card-elevated p-3 text-center">
               <div className="font-body text-xs text-text-muted mb-1">Confluence</div>
               <div className={clsx('font-display text-base font-bold',
-                confluenceScore >= 4 ? 'text-accent-green'
-                : confluenceScore >= 3 ? 'text-accent-yellow' : 'text-accent-red'
-              )}>{confluenceScore}/5</div>
+                confluenceScore === 4 ? 'text-accent-green' : 'text-accent-red'
+              )}>{confluenceScore}/4</div>
             </div>
           </div>
 

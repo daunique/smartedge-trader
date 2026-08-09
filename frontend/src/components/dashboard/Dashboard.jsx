@@ -109,52 +109,28 @@ function PositionRow({ position }) {
   )
 }
 
-function OrbCountdown() {
+function NextCandleCountdown() {
+  // The strategy only re-evaluates on a completed 1H candle -- no session
+  // windows, no "market closed" state, this system trades whenever the
+  // confluence conditions line up, any hour, any day.
   const [timeLeft, setTimeLeft] = useState('')
-  const [phase, setPhase]       = useState('')
   useEffect(() => {
     const tick = () => {
-      const now   = new Date()
-      const total = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds()
-      const nyOpen  = 14 * 3600 + 30 * 60
-      const orbEnd  = nyOpen + 15 * 60
-      const execEnd = nyOpen + 2 * 3600
-      if (total < nyOpen) {
-        const d = nyOpen - total
-        setTimeLeft(`${Math.floor(d/3600)}h ${Math.floor((d%3600)/60)}m ${d%60}s`)
-        setPhase('PRE-MARKET')
-      } else if (total < orbEnd) {
-        const d = orbEnd - total
-        setTimeLeft(`${Math.floor(d/60)}m ${d%60}s`)
-        setPhase('ORB FORMING')
-      } else if (total < execEnd) {
-        const d = execEnd - total
-        setTimeLeft(`${Math.floor(d/3600)}h ${Math.floor((d%3600)/60)}m ${d%60}s`)
-        setPhase('EXECUTION')
-      } else {
-        setTimeLeft('CLOSED'); setPhase('NO TRADES')
-      }
+      const now = new Date()
+      const secsIntoHour = now.getUTCMinutes() * 60 + now.getUTCSeconds()
+      const d = 3600 - secsIntoHour
+      setTimeLeft(`${Math.floor(d / 60)}m ${d % 60}s`)
     }
     tick(); const t = setInterval(tick, 1000); return () => clearInterval(t)
   }, [])
-  const phaseColor = {
-    'PRE-MARKET': 'text-text-secondary', 'ORB FORMING': 'text-accent-yellow',
-    'EXECUTION':  'text-accent-green',   'NO TRADES':   'text-text-muted',
-  }
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between mb-3">
-        <span className="stat-label">ORB Window</span>
+        <span className="stat-label">Next Candle Close</span>
         <Clock size={14} className="text-text-muted" />
       </div>
-      <div className={clsx('font-body text-xs font-semibold mb-1', phaseColor[phase])}>{phase}</div>
+      <div className="font-body text-xs font-semibold mb-1 text-accent-cyan">1H · XRP + ETH · 24/7</div>
       <div className="font-display text-lg font-bold text-text-primary">{timeLeft}</div>
-      <div className="mt-2 h-1 bg-bg-elevated rounded-full overflow-hidden">
-        <div className={clsx('h-full rounded-full',
-          phase === 'EXECUTION' ? 'bg-accent-green'
-          : phase === 'ORB FORMING' ? 'bg-accent-yellow' : 'bg-text-muted'
-        )} style={{ width: phase === 'EXECUTION' ? '60%' : phase === 'ORB FORMING' ? '30%' : '10%' }} />
-      </div>
     </div>
   )
 }
@@ -309,7 +285,7 @@ export default function Dashboard() {
         </div>
 
         <div className="space-y-3">
-          <OrbCountdown />
+          <NextCandleCountdown />
           <StreakCard tradeHistory={tradeHistory} />
         </div>
       </div>

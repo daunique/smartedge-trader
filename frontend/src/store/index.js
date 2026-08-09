@@ -1,19 +1,16 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-// Aligned to the walk-forward-backtested config (Full_SixMonth_Report.md).
-// Previously riskPerTrade:1/minRR:3/mlThreshold:0.65 here disagreed with the
-// backend and with each other — frontend would silently overwrite backend
-// fixes on first settings save. Now both sides match what was backtested.
+// Aligned to the actual backtest (single train/test split, Jan-Jun 2026 1H
+// data — see README). riskPerTrade is per-symbol, not a flat number: XRP and
+// ETH use different risk levels because that's what the validated strategy's
+// risk/drawdown sweep actually supports for each pair.
 const DEFAULT_SETTINGS = {
-  riskPerTrade:    2,
-  minRR:           2,
-  maxTradesPerDay: 3,
-  dailyLossLimit:  2,
-  orbTimeframe:    15,
-  beTrigger:       1,
-  trailingStop:    true,
-  mlThreshold:     0.55,
+  riskPerTrade:    { XRPUSDT: 6, ETHUSDT: 5 },
+  minRR:           3,
+  maxTradesPerDay: 4,
+  dailyLossLimit:  20,
+  beTrigger:       1.5,
   notifications:   true,
   mobileAlerts:    true,
   apiKey:          '',

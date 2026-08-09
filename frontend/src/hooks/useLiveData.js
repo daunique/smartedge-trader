@@ -5,17 +5,16 @@ import { wsService } from '../services/websocket'
 import { priceFeed } from '../services/priceFeed'
 import { notifications } from '../services/notifications'
 
-const CRYPTO_SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','BNBUSDT']
+const CRYPTO_SYMBOLS = ['XRPUSDT','ETHUSDT']  // the two pairs this strategy is validated on
 const POLL_INTERVAL  = 15000
 const PRICE_INTERVAL = 1000
 
 const normalizeSignal = (s) => ({
   id: s.id, symbol: s.symbol, direction: s.direction,
   entry: s.entry, tp: s.tp, sl: s.sl, be: s.be,
-  rr: s.rr, mlScore: s.ml_score, confidence: s.confidence,
-  status: s.status, timeframe: s.timeframe, market: s.market,
-  vwapAbove: s.vwap_above, orbBreak: s.orb_break,
-  regime: s.regime, atr: s.atr, session: s.session,
+  rr: s.rr, status: s.status, timeframe: s.timeframe, market: s.market,
+  trend: s.trend, entryTrigger: s.entry_trigger, volOk: s.vol_ok,
+  atr: s.atr,
   timestamp: new Date(s.timestamp).getTime(),
 })
 
@@ -36,7 +35,7 @@ const normalizeTrade = (t) => {
   return {
     id: t.id, symbol: t.symbol, direction: t.direction,
     pnl: t.pnl || 0, runningPnl: t.runningPnl || 0,
-    rr: t.rr || '0', mlScore: t.mlScore || t.ml_score || 0,
+    rr: t.rr || '0',
     status: t.status || 'SL',
     date,
     market: t.market || 'crypto', duration: t.duration || '—',

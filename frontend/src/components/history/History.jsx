@@ -229,9 +229,8 @@ export default function History() {
             { label: 'Result',      cls: 'col-span-1' },
             { label: 'P&L',         cls: 'col-span-2' },
             { label: 'RR',          cls: 'col-span-1' },
-            { label: 'ML',          cls: 'col-span-1 hidden lg:block' },
             { label: 'Duration',    cls: 'col-span-1 hidden lg:block' },
-            { label: 'Time',        cls: 'col-span-3 hidden md:block' },
+            { label: 'Time',        cls: 'col-span-4 hidden md:block' },
           ].map(h => (
             <div key={h.label} className={clsx('font-body text-xs text-text-muted uppercase tracking-wider', h.cls)}>{h.label}</div>
           ))}
@@ -275,17 +274,12 @@ export default function History() {
                 </span>
               </div>
               <div className="col-span-1 hidden lg:block">
-                <span className={clsx('font-body text-xs', trade.mlScore >= 0.75 ? 'text-accent-green' : 'text-accent-yellow')}>
-                  {(trade.mlScore * 100).toFixed(0)}%
-                </span>
-              </div>
-              <div className="col-span-1 hidden lg:block">
                 <div className="flex items-center gap-1">
                   <Clock size={10} className="text-text-muted" />
                   <span className="font-body text-xs text-text-muted">{trade.duration}</span>
                 </div>
               </div>
-              <div className="col-span-3 hidden md:block">
+              <div className="col-span-4 hidden md:block">
                 <span className="font-body text-xs text-text-secondary">{formatDate(trade.date)}</span>
               </div>
             </div>

@@ -26,11 +26,7 @@ services:
         sync: false
       - key: BYBIT_TESTNET
         value: "true"
-      - key: JWT_SECRET
-        generateValue: true
       - key: ACCOUNT_MODE
         value: DEMO
-      - key: ML_THRESHOLD
-        value: "0.65"
     healthCheckPath: /health
     autoDeploy: true

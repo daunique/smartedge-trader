@@ -1,44 +1,55 @@
 """
-SmartEdge Trader — Production Signal Engine
-Strategy: VWAP + ORB + ATR + ML Filter
-Sessions: London (08:00–11:00 UTC) + NY (13:30–16:30 UTC)
-Testing: TESTING_MODE=true bypasses session filter
+SmartEdge Trader — Signal Engine
+Strategy: SMA-cross trend filter + candle-structure entry trigger + ATR volatility
+filter + ATR-based TP/SL/BE — the exact confluence combination validated by
+backtest across Jan-Jun 2026 1H data (single train/test split; see README).
+No ML component: this system never used a trained model -- the previous
+"ML filter" was a hand-weighted heuristic function, not a fitted classifier,
+and was not part of what was backtested, so it has been removed rather than
+reimplemented.
+
+Per-symbol strategy (both use SL=1.5xATR / TP=4.5xATR / BE at +1.5R):
+  XRPUSDT: trend = SMA(50) vs SMA(200) | entry = candle body-ratio > 0.789
+  ETHUSDT: trend = SMA(100) vs SMA(200) | entry = candle range > 1.52x its 20-period average
+  both:    skip entries when ATR is in the top 40% of its trailing 30-day range
 """
 
 import asyncio, httpx, numpy as np, uuid, os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-# Restricted to exactly the 6 symbols validated in the walk-forward backtest
-# (AVAX/LINK were previously included live but were never backtested — removed)
-ALL_SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
-    "BNBUSDT", "DOGEUSDT",
-]
+# Only the two pairs this strategy was actually validated on.
+ALL_SYMBOLS = ["XRPUSDT", "ETHUSDT"]
 
-SYMBOL_DISPLAY = {
-    "BTCUSDT": "BTC/USDT",  "ETHUSDT": "ETH/USDT",
-    "SOLUSDT": "SOL/USDT",  "XRPUSDT": "XRP/USDT",
-    "BNBUSDT": "BNB/USDT",  "DOGEUSDT":"DOGE/USDT",
+SYMBOL_DISPLAY = {"XRPUSDT": "XRP/USDT", "ETHUSDT": "ETH/USDT"}
+
+# Per-symbol confluence, exactly as backtested -- do not change one side
+# without re-validating, these are not independent knobs.
+STRATEGY_PARAMS = {
+    "XRPUSDT": {"trend_fast": 50,  "trend_slow": 200, "entry": "body_ratio", "body_ratio_min": 0.789},
+    "ETHUSDT": {"trend_fast": 100, "trend_slow": 200, "entry": "mom_candle", "range_mult_min": 1.52},
 }
-
-TESTING_MODE = os.getenv("TESTING_MODE", "true").lower() == "true"
+ATR_PERIOD             = 14
+SL_ATR_MULT             = 1.5
+TP_ATR_MULT             = 4.5   # 3R target (4.5 / 1.5)
+BE_TRIGGER_R            = 1.5
+VOL_LOOKBACK_H          = 720   # 30 days, matches the backtest's rolling percentile window
+VOL_EXCLUDE_ABOVE_PCTL  = 60    # skip entries when ATR% is in the top 40% for that symbol
 
 @dataclass
 class Signal:
     id: str; symbol: str; direction: str
     entry: float; tp: float; sl: float; be: float
-    rr: str; ml_score: float; confidence: int
-    status: str; timeframe: str; market: str
-    vwap_above: bool; orb_break: bool; regime: str
+    rr: str; status: str; timeframe: str; market: str
+    trend: str; entry_trigger: str; vol_ok: bool
     atr: float; timestamp: str; expires_at: str
-    session: str = "ANY"
 
-# ── Market Data ───────────────────────────────────────────────────
-async def fetch_candles(symbol: str, interval: str = "15", limit: int = 200) -> list[dict]:
+# -- Market Data ------------------------------------------------------------
+async def fetch_candles(symbol: str, interval: str = "60", limit: int = 1000) -> list[dict]:
+    """interval=60 -> 1H candles, matching the backtest exactly (was 15m)."""
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get("https://api.bybit.com/v5/market/kline", params={
                 "category": "linear", "symbol": symbol,
                 "interval": interval, "limit": str(limit),
@@ -57,212 +68,132 @@ async def fetch_candles(symbol: str, interval: str = "15", limit: int = 200) -> 
         print(f"[CANDLES] {symbol}: {e}")
         return []
 
-# ── Session Detection ─────────────────────────────────────────────
-def get_current_session() -> str:
-    now = datetime.now(timezone.utc)
-    h   = now.hour + now.minute / 60
-    if  8.0 <= h < 11.0: return "LONDON"
-    if 13.5 <= h < 16.5: return "NEW_YORK"
-    if 11.0 <= h < 13.5: return "OVERLAP"
-    return "OFF_HOURS"
+# -- Indicators (match the backtest's math, not simplified approximations) --
+def sma(values: list[float], period: int) -> Optional[float]:
+    if len(values) < period: return None
+    return float(np.mean(values[-period:]))
 
-def is_trading_session() -> bool:
-    if TESTING_MODE: return True
-    session = get_current_session()
-    return session in ("LONDON", "NEW_YORK", "OVERLAP")
+def wilder_atr_series(candles: list[dict], period: int = ATR_PERIOD) -> list:
+    """Wilder-smoothed ATR (same formula the backtest used: ewm alpha=1/period),
+    NOT a simple rolling mean -- the two diverge enough to matter for SL/TP sizing."""
+    n = len(candles)
+    if n < 2: return [None] * n
+    trs = [None]
+    for i in range(1, n):
+        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    atr = [None] * n
+    if n <= period: return atr
+    atr[period] = float(np.mean(trs[1:period + 1]))
+    for i in range(period + 1, n):
+        atr[i] = (atr[i - 1] * (period - 1) + trs[i]) / period
+    return atr
 
-def get_session_open_ts() -> int:
-    """Get timestamp of current session open candle"""
-    now = datetime.now(timezone.utc)
-    h   = now.hour + now.minute / 60
-    today = now.strftime("%Y-%m-%d")
-    if h >= 13.5:
-        open_time = f"{today}T13:30:00+00:00"
-    elif h >= 8.0:
-        open_time = f"{today}T08:00:00+00:00"
-    else:
-        # Previous NY session
-        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        open_time = f"{yesterday}T13:30:00+00:00"
-    return int(datetime.fromisoformat(open_time).timestamp() * 1000)
+def body_ratio(c: dict) -> float:
+    rng = c["high"] - c["low"]
+    return abs(c["close"] - c["open"]) / rng if rng > 0 else 0.0
 
-# ── Technical Indicators ──────────────────────────────────────────
-def calc_session_vwap(candles: list[dict]) -> float:
-    session_ts = get_session_open_ts()
-    session_c  = [c for c in candles if c["timestamp"] >= session_ts]
-    if not session_c:
-        session_c = candles[-20:]
-    cum_pv = cum_v = 0.0
-    for c in session_c:
-        tp      = (c["high"] + c["low"] + c["close"]) / 3
-        cum_pv += tp * c["volume"]
-        cum_v  += c["volume"]
-    return cum_pv / cum_v if cum_v > 0 else 0
+def candle_direction(c: dict) -> int:
+    return 1 if c["close"] > c["open"] else (-1 if c["close"] < c["open"] else 0)
 
-def calc_atr(candles: list[dict], period: int = 14) -> float:
-    if len(candles) < 2: return 0
-    trs = []
-    for i in range(1, min(period + 1, len(candles))):
-        c = candles[-i]; p = candles[-i - 1]
-        trs.append(max(
-            c["high"] - c["low"],
-            abs(c["high"] - p["close"]),
-            abs(c["low"]  - p["close"])
-        ))
-    return float(np.mean(trs)) if trs else 0
+def range_avg(candles: list[dict], period: int = 20) -> Optional[float]:
+    if len(candles) < period: return None
+    return float(np.mean([c["high"] - c["low"] for c in candles[-period:]]))
 
-def get_orb(candles: list[dict]) -> tuple[float, float]:
-    """Get Opening Range from first candle of current session"""
-    session_ts = get_session_open_ts()
-    orb_candle = next((c for c in candles if c["timestamp"] >= session_ts), None)
-    if not orb_candle:
-        orb_candle = candles[0]
-    # ORB = first 15 min high/low (1 candle on 15M chart)
-    return orb_candle["high"], orb_candle["low"]
+def atr_percentile(atr_pct_series: list, lookback: int = VOL_LOOKBACK_H) -> Optional[float]:
+    """Where the current ATR% ranks within its trailing `lookback` hours (0-100)."""
+    window = [v for v in atr_pct_series[-lookback:] if v is not None]
+    if len(window) < 168:   # need at least a week of history before this is meaningful
+        return None
+    current = window[-1]
+    return float(sum(1 for v in window if v <= current) / len(window) * 100)
 
-def detect_regime(candles: list[dict]) -> str:
-    if len(candles) < 20: return "RANGING"
-    recent   = candles[-20:]
-    closes   = [c["close"] for c in recent]
-    ema_fast = np.mean(closes[-5:])
-    ema_slow = np.mean(closes[-20:])
-    slope    = abs(ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
-    highs    = [c["high"] for c in recent]
-    lows     = [c["low"]  for c in recent]
-    hh = sum(1 for i in range(1, len(highs)) if highs[i] > highs[i-1])
-    ll = sum(1 for i in range(1, len(lows))  if lows[i]  < lows[i-1])
-    directional = max(hh, ll) / (len(recent) - 1)
-    return "TRENDING" if slope > 0.25 or directional > 0.60 else "RANGING"
-
-def calc_momentum_direction(candles: list[dict], vwap: float) -> tuple[str, bool]:
-    """Determine direction using VWAP + EMA + price action"""
-    price    = candles[-1]["close"]
-    closes   = [c["close"] for c in candles[-10:]]
-    ema_fast = np.mean(closes[-3:])
-    ema_slow = np.mean(closes[-10:])
-    score    = 0
-    if price > vwap:        score += 1
-    if ema_fast > ema_slow: score += 1
-    if closes[-1] > closes[-3]: score += 1
-    return ("LONG", price > vwap) if score >= 2 else ("SHORT", price > vwap)
-
-def ml_score_signal(features: dict) -> float:
-    """
-    Weighted signal quality score.
-    Production: replace body with loaded XGBoost model.
-    """
-    s  = min(features.get("vol_ratio", 1.0) / 2.5, 1.0) * 0.20
-    s += (1.0 if features.get("orb_break")    else 0.3) * 0.20
-    s += (0.9 if features.get("regime") == "TRENDING" else 0.4) * 0.20
-    s += (1.0 if features.get("vwap_aligned") else 0.3) * 0.15
-    s += min(features.get("atr_pct", 0.5), 1.0) * 0.10
-    s += features.get("momentum", 0.5)            * 0.10
-    s += (1.0 if features.get("ema_aligned")  else 0.3) * 0.05
-    return round(min(max(s, 0.0), 1.0), 3)
-
-# ── Main Scanner ──────────────────────────────────────────────────
-async def scan_symbol(symbol: str, threshold: float = 0.55) -> Optional[Signal]:
-    candles = await fetch_candles(symbol, interval="15", limit=200)
-    if len(candles) < 30: return None
-
-    price     = candles[-1]["close"]
-    vwap      = calc_session_vwap(candles)
-    atr       = calc_atr(candles)
-    regime    = detect_regime(candles)
-    orb_high, orb_low = get_orb(candles)
-    session   = get_current_session()
-
-    # ─ ORB breakout detection ─────────────────────────────────────
-    buf = 0.0003  # 0.03% buffer to avoid false breaks
-    if price > orb_high * (1 + buf):
-        direction, vwap_above = "LONG", price > vwap
-        orb_break = True
-    elif price < orb_low * (1 - buf):
-        direction, vwap_above = "SHORT", price > vwap
-        orb_break = True
-    else:
-        # No ORB break — use momentum direction in testing mode
-        if TESTING_MODE:
-            direction, vwap_above = calc_momentum_direction(candles, vwap)
-            orb_break = False
-        else:
-            return None  # Production: require ORB break
-
-    # ─ VWAP directional filter ────────────────────────────────────
-    if not TESTING_MODE:
-        if direction == "LONG"  and not (price > vwap): return None
-        if direction == "SHORT" and not (price < vwap): return None
-
-    # ─ Levels (ATR-based) ─────────────────────────────────────────
-    atr_sl = max(atr * 1.5, price * 0.003)  # min 0.3% SL
-    if direction == "LONG":
-        sl = price - atr_sl
-        tp = price + atr_sl * 3.0   # 1:3 minimum
-        be = price + atr_sl * 1.0
-    else:
-        sl = price + atr_sl
-        tp = price - atr_sl * 3.0
-        be = price - atr_sl * 1.0
-
-    risk = abs(price - sl)
-    rr   = abs(tp - price) / risk if risk > 0 else 0
-    if rr < 2.0: return None
-
-    # ─ Volume + momentum features ─────────────────────────────────
-    recent_vol  = np.mean([c["volume"] for c in candles[-5:]])
-    avg_vol     = np.mean([c["volume"] for c in candles[-20:]])
-    vol_ratio   = recent_vol / avg_vol if avg_vol > 0 else 1.0
-    last        = candles[-1]
-    c_range     = last["high"] - last["low"]
-    momentum    = ((last["close"] - last["low"]) / c_range
-                   if direction == "LONG"
-                   else (last["high"] - last["close"]) / c_range
-                   ) if c_range > 0 else 0.5
-    atr_pct     = (atr / price) * 100 if price > 0 else 0
-    closes      = [c["close"] for c in candles[-10:]]
-    ema_aligned = (np.mean(closes[-3:]) > np.mean(closes[-10:])) == (direction == "LONG")
-
-    score = ml_score_signal({
-        "vol_ratio":   vol_ratio,
-        "orb_break":   orb_break,
-        "regime":      regime,
-        "vwap_aligned": vwap_above == (direction == "LONG"),
-        "atr_pct":     atr_pct,
-        "momentum":    momentum,
-        "ema_aligned": ema_aligned,
-    })
-    confidence = int(score * 100)
-
-    print(f"[SCAN] {symbol}: {direction} price={price:.4f} vwap={vwap:.4f} "
-          f"orb={'✓' if orb_break else '—'} ML={confidence}% regime={regime} session={session}")
-
-    if score < threshold:
+# -- Main Scanner -------------------------------------------------------------
+async def scan_symbol(symbol: str) -> Optional[Signal]:
+    params = STRATEGY_PARAMS[symbol]
+    candles = await fetch_candles(symbol, interval="60", limit=1000)
+    min_needed = max(params["trend_slow"], VOL_LOOKBACK_H) + 5
+    if len(candles) < min_needed:
+        print(f"[SCAN] {symbol}: only {len(candles)} candles, need {min_needed} -- skipping")
         return None
 
-    status     = "ACTIVE" if score >= 0.72 else "PENDING"
-    now        = datetime.now(timezone.utc)
-    expires_at = datetime.fromtimestamp(
-        now.timestamp() + 4 * 3600, tz=timezone.utc
-    ).isoformat()
+    closes = [c["close"] for c in candles]
+    price  = closes[-1]
+
+    sma_fast = sma(closes, params["trend_fast"])
+    sma_slow = sma(closes, params["trend_slow"])
+    if sma_fast is None or sma_slow is None:
+        return None
+    trend_bull = sma_fast > sma_slow
+    trend = "BULL" if trend_bull else "BEAR"
+
+    atr_series = wilder_atr_series(candles, ATR_PERIOD)
+    atr = atr_series[-1]
+    if atr is None or atr <= 0:
+        return None
+    atr_pct_series = [(a / c) if a is not None else None for a, c in zip(atr_series, closes)]
+    vol_pctl = atr_percentile(atr_pct_series)
+    vol_ok = (vol_pctl is None) or (vol_pctl <= VOL_EXCLUDE_ABOVE_PCTL)
+
+    last = candles[-1]
+    direction_candle = candle_direction(last)
+
+    # -- entry trigger (symbol-specific, exactly as backtested) -------------
+    triggered_long = triggered_short = False
+    if params["entry"] == "body_ratio":
+        br = body_ratio(last)
+        triggered_long  = trend_bull      and direction_candle > 0 and br > params["body_ratio_min"]
+        triggered_short = (not trend_bull) and direction_candle < 0 and br > params["body_ratio_min"]
+        trigger_desc = f"body-ratio {body_ratio(last):.2f} > {params['body_ratio_min']}"
+    else:  # mom_candle
+        ravg = range_avg(candles, 20)
+        rng  = last["high"] - last["low"]
+        mult = (rng / ravg) if ravg else 0
+        triggered_long  = trend_bull      and direction_candle > 0 and ravg and mult > params["range_mult_min"]
+        triggered_short = (not trend_bull) and direction_candle < 0 and ravg and mult > params["range_mult_min"]
+        trigger_desc = f"range {mult:.2f}x avg > {params['range_mult_min']}x"
+
+    if not vol_ok or not (triggered_long or triggered_short):
+        print(f"[SCAN] {symbol}: trend={trend} vol_ok={vol_ok} "
+              f"({'-' if vol_pctl is None else f'{vol_pctl:.0f}pctl'}) no entry")
+        return None
+
+    direction = "LONG" if triggered_long else "SHORT"
+
+    # -- levels: SL/TP/BE exactly as backtested; live execution acts
+    # immediately on signal generation as an approximation of the
+    # backtest's next-candle-open fill ------------------------------------
+    if direction == "LONG":
+        sl = price - SL_ATR_MULT * atr
+        tp = price + TP_ATR_MULT * atr
+        be = price + BE_TRIGGER_R * SL_ATR_MULT * atr
+    else:
+        sl = price + SL_ATR_MULT * atr
+        tp = price - TP_ATR_MULT * atr
+        be = price - BE_TRIGGER_R * SL_ATR_MULT * atr
+
+    rr = TP_ATR_MULT / SL_ATR_MULT  # constant by construction = 3.0
+
+    print(f"[SCAN] {symbol}: {direction} price={price:.4f} trend={trend} "
+          f"trigger=({trigger_desc}) vol={'ok' if vol_ok else 'skip'}")
+
+    now = datetime.now(timezone.utc)
+    expires_at = datetime.fromtimestamp(now.timestamp() + 3600, tz=timezone.utc).isoformat()
 
     return Signal(
         id=str(uuid.uuid4()),
         symbol=SYMBOL_DISPLAY.get(symbol, symbol),
         direction=direction, entry=round(price, 6),
         tp=round(tp, 6), sl=round(sl, 6), be=round(be, 6),
-        rr=f"1:{rr:.1f}", ml_score=score, confidence=confidence,
-        status=status, timeframe="15M", market="crypto",
-        vwap_above=vwap_above, orb_break=orb_break,
-        regime=regime, atr=round(atr, 6),
-        timestamp=now.isoformat(), expires_at=expires_at,
-        session=session,
+        rr=f"1:{rr:.1f}", status="ACTIVE", timeframe="1H", market="crypto",
+        trend=trend, entry_trigger=trigger_desc, vol_ok=vol_ok,
+        atr=round(atr, 6), timestamp=now.isoformat(), expires_at=expires_at,
     )
 
-# ── Signal Engine ─────────────────────────────────────────────────
+# -- Signal Engine ------------------------------------------------------------
 class SignalEngine:
     def __init__(self):
         self.signals      = []
-        self.threshold    = float(os.getenv("ML_THRESHOLD", "0.55"))
         self.running      = False
         self.broadcast_cb = None
 
@@ -274,22 +205,18 @@ class SignalEngine:
         return [asdict(s) for s in self.signals]
 
     async def scan_all(self):
-        session = get_current_session()
-        if not is_trading_session():
-            print(f"[ENGINE] Off-hours ({session}) — skipping scan")
-            return
-
-        print(f"[ENGINE] Scanning {len(ALL_SYMBOLS)} symbols "
-              f"| session={session} | testing={TESTING_MODE} | threshold={int(self.threshold*100)}%")
-
-        results     = await asyncio.gather(
-            *[scan_symbol(sym, self.threshold) for sym in ALL_SYMBOLS],
+        print(f"[ENGINE] Scanning {len(ALL_SYMBOLS)} symbols (1H, 24/7 -- no session gating)")
+        results = await asyncio.gather(
+            *[scan_symbol(sym) for sym in ALL_SYMBOLS],
             return_exceptions=True
         )
+        for r in results:
+            if isinstance(r, Exception):
+                print(f"[ENGINE] scan error: {r}")
         new_signals = [r for r in results if isinstance(r, Signal)]
         existing    = {s.symbol for s in new_signals}
         self.signals = [s for s in self.signals if s.symbol not in existing] + new_signals
-        print(f"[ENGINE] ✅ {len(new_signals)} new signals | {len(self.signals)} total active")
+        print(f"[ENGINE] {len(new_signals)} new signals | {len(self.signals)} total active")
 
         if self.broadcast_cb:
             await self.broadcast_cb({
@@ -300,14 +227,16 @@ class SignalEngine:
 
     async def run(self):
         self.running = True
-        mode = "TESTING (24/7)" if TESTING_MODE else "PRODUCTION (London + NY sessions)"
-        print(f"[ENGINE] Started — {mode}")
+        print("[ENGINE] Started -- 1H candles, XRPUSDT + ETHUSDT, 24/7")
         while self.running:
             try:
                 await self.scan_all()
             except Exception as e:
                 print(f"[ENGINE] Error: {e}")
-            await asyncio.sleep(300)  # 5 min
+            # Signals only change on a completed 1H candle; polling every 5 min
+            # is just how promptly a new candle close gets noticed, not a
+            # parameter the backtest had an opinion on.
+            await asyncio.sleep(300)
 
     def stop(self): self.running = False
 

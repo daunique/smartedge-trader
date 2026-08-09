@@ -61,6 +61,8 @@ async def bybit_get(path: str, params: dict = {}) -> dict:
         return r.json()
 
 # ── Position sizing ───────────────────────────────────────────────
+MAX_LEVERAGE = {"XRPUSDT": 15.0, "ETHUSDT": 20.0}  # matches the backtest's safety ceiling
+
 def calc_position_size(
     balance: float,
     risk_pct: float,
@@ -68,39 +70,27 @@ def calc_position_size(
     sl: float,
     min_qty: float = 0.001,
     qty_step: float = 0.001,
+    max_leverage: float = 10.0,
 ) -> float:
-    """Risk-based position sizing"""
-    risk_amount  = balance * (risk_pct / 100)
+    """Risk-based position sizing, leverage-capped exactly like the backtest:
+    qty is normally risk_amount / stop_distance, but if that stop distance is
+    small enough to imply more than max_leverage, the position is capped at
+    max_leverage*balance notional instead -- actual risk taken drops below
+    risk_pct on those trades rather than leverage climbing unbounded."""
+    risk_amount   = balance * (risk_pct / 100)
     risk_per_unit = abs(entry - sl)
-    if risk_per_unit == 0:
+    if risk_per_unit == 0 or entry == 0:
         return min_qty
-    raw_qty = risk_amount / risk_per_unit
+    raw_qty     = risk_amount / risk_per_unit
+    max_qty_lev = (balance * max_leverage) / entry
+    qty = min(raw_qty, max_qty_lev)
     # Round down to qty_step
-    qty = max(min_qty, (raw_qty // qty_step) * qty_step)
+    qty = max(min_qty, (qty // qty_step) * qty_step)
     return round(qty, 6)
 
-# ── Min qty per symbol ────────────────────────────────────────────
-MIN_QTY = {
-    "BTCUSDT":  0.001,
-    "ETHUSDT":  0.01,
-    "SOLUSDT":  0.1,
-    "XRPUSDT":  1.0,
-    "BNBUSDT":  0.01,
-    "DOGEUSDT": 10.0,
-    "AVAXUSDT": 0.1,
-    "LINKUSDT": 0.1,
-}
-
-QTY_STEP = {
-    "BTCUSDT":  0.001,
-    "ETHUSDT":  0.01,
-    "SOLUSDT":  0.1,
-    "XRPUSDT":  1.0,
-    "BNBUSDT":  0.01,
-    "DOGEUSDT": 10.0,
-    "AVAXUSDT": 0.1,
-    "LINKUSDT": 0.1,
-}
+# ── Min qty per symbol (only the two validated pairs) ─────────────
+MIN_QTY  = {"XRPUSDT": 1.0, "ETHUSDT": 0.01}
+QTY_STEP = {"XRPUSDT": 1.0, "ETHUSDT": 0.01}
 
 # ── Safety checklist ──────────────────────────────────────────────
 @dataclass
@@ -142,22 +132,25 @@ async def run_safety_checks(settings: dict, trades_today: int, daily_loss: float
     return SafetyCheck(True, "All checks passed", trades_today, loss_pct, balance)
 
 # ── Order executor ────────────────────────────────────────────────
+# Per-symbol risk: the two pairs use different risk-per-trade because that's
+# what the backtest's risk/drawdown sweep actually validated -- XRP's tighter
+# max-drawdown profile supports more risk per trade than ETH's for a
+# comparable drawdown outcome. Don't collapse these to one shared number.
+RISK_PER_TRADE_PCT = {"XRPUSDT": 6.0, "ETHUSDT": 5.0}
+
 class AutoExecutor:
     def __init__(self):
-        # Defaults aligned to the walk-forward-backtested config (see
-        # Full_SixMonth_Report.md / Fifty_Dollar_Walkforward_Report.md).
-        # minRR/mlThreshold previously stricter here than in signal_engine.py's
-        # own defaults (3.0/0.65 vs 2.0/0.55), which meant the executor was
-        # silently rejecting signals the engine had already approved — fixed
-        # so both files agree with what was actually backtested.
+        # Aligned to the actual backtest (single train/test split over
+        # Jan-Jun 2026 1H data -- see README). No ML gating: nothing in the
+        # validated strategy conditions on a model score.
         self.settings = {
-            "riskPerTrade":    2.0,
-            "minRR":           2.0,
-            "maxTradesPerDay": 3,
-            "dailyLossLimit":  2.0,
-            "beTrigger":       1.0,
-            "trailingStop":    True,
-            "mlThreshold":     0.55,
+            "riskPerTrade":    dict(RISK_PER_TRADE_PCT),  # per-symbol, see above
+            "minRR":           3.0,     # matches TP/SL = 4.5xATR / 1.5xATR exactly
+            "maxTradesPerDay": 4,       # safety net only -- signals average ~1 every 1.6-2.3 days
+            "dailyLossLimit":  20.0,    # safety net only -- not itself backtested; set well
+                                        # above a single trade's risk so it only trips on a
+                                        # genuine malfunction, not normal operation
+            "beTrigger":       1.5,
         }
         self.mode          = "SEMI-AUTO"  # MANUAL | SEMI-AUTO | FULL-AUTO
         self.paused        = False
@@ -201,11 +194,6 @@ class AutoExecutor:
         entry      = float(signal["entry"])
         tp         = float(signal["tp"])
         sl         = float(signal["sl"])
-        ml_score   = float(signal.get("ml_score", 0))
-
-        # ML threshold check
-        if ml_score < self.settings["mlThreshold"]:
-            return {"success": False, "reason": f"ML score too low ({ml_score:.0%})"}
 
         # Min RR check
         risk = abs(entry - sl)
@@ -213,19 +201,21 @@ class AutoExecutor:
         if rr < self.settings["minRR"]:
             return {"success": False, "reason": f"RR too low ({rr:.1f} < {self.settings['minRR']})"}
 
-        # Position size
+        # Position size -- risk % is per-symbol (XRP 6% / ETH 5%), not a flat number
+        risk_pct = self.settings["riskPerTrade"].get(symbol_raw, RISK_PER_TRADE_PCT.get(symbol_raw, 1.0))
         qty = calc_position_size(
-            balance   = check.balance,
-            risk_pct  = self.settings["riskPerTrade"],
-            entry     = entry,
-            sl        = sl,
-            min_qty   = MIN_QTY.get(symbol_raw, 0.01),
-            qty_step  = QTY_STEP.get(symbol_raw, 0.01),
+            balance      = check.balance,
+            risk_pct     = risk_pct,
+            entry        = entry,
+            sl           = sl,
+            min_qty      = MIN_QTY.get(symbol_raw, 0.01),
+            qty_step     = QTY_STEP.get(symbol_raw, 0.01),
+            max_leverage = MAX_LEVERAGE.get(symbol_raw, 10.0),
         )
 
         print(f"[EXECUTOR] Placing {direction} {symbol_raw} "
               f"qty={qty} entry={entry} tp={tp} sl={sl} "
-              f"risk={self.settings['riskPerTrade']}% RR=1:{rr:.1f}")
+              f"risk={risk_pct}% RR=1:{rr:.1f}")
 
         # Place order
         body = {

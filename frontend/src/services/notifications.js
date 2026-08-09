@@ -62,7 +62,7 @@ class NotificationService {
   async signalAlert(signal) {
     return this.notify(
       `🎯 ${signal.symbol} ${signal.direction} Signal`,
-      `Entry: ${signal.entry} · TP: ${signal.tp} · SL: ${signal.sl} · ML: ${signal.confidence}%`,
+      `Entry: ${signal.entry} · TP: ${signal.tp} · SL: ${signal.sl} · RR: ${signal.rr}`,
       { tag: `signal-${signal.id}` }
     )
   }

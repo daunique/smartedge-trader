@@ -193,11 +193,11 @@ export default function Header() {
             </div>
             <div className="space-y-2 mb-5">
               {[
-                'ML score filter active (≥65%)',
-                'Daily loss limit enforced (2%)',
+                'Min 1:3 R:R enforced (SL=1.5xATR / TP=4.5xATR)',
+                'Daily loss limit enforced (20%, safety net only)',
                 'Max trades/day respected',
                 'Kill switch always active',
-                'Break-even auto-triggered at 1:1',
+                'Break-even auto-triggered at 1:1.5',
               ].map(item => (
                 <div key={item} className="flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-accent-green" />

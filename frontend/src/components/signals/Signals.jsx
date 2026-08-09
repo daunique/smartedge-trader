@@ -72,18 +72,8 @@ function SignalCard({ signal }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex-1">
-            <div className="flex justify-between mb-1">
-              <span className="font-body text-xs text-text-muted">ML Score</span>
-              <span className={clsx('font-body text-xs font-semibold',
-                signal.confidence >= 75 ? 'text-accent-green' : 'text-accent-yellow'
-              )}>{signal.confidence}%</span>
-            </div>
-            <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
-              <div className={clsx('h-full rounded-full',
-                signal.confidence >= 75 ? 'bg-accent-green' : 'bg-accent-yellow'
-              )} style={{ width: `${signal.confidence}%` }} />
-            </div>
+          <div className="flex-1 font-body text-xs text-text-muted truncate" title={signal.entryTrigger}>
+            {signal.entryTrigger || 'entry trigger'}
           </div>
           <div className="text-right">
             <div className="font-body text-xs text-text-muted">RR</div>
@@ -93,12 +83,11 @@ function SignalCard({ signal }) {
 
         <div className="flex gap-2 flex-wrap">
           <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-            signal.vwapAbove ? 'bg-accent-green/5 border-accent-green/20 text-accent-green/80' : 'bg-accent-red/5 border-accent-red/20 text-accent-red/80'
-          )}>VWAP {signal.vwapAbove ? '▲' : '▼'}</span>
+            signal.trend === 'BULL' ? 'bg-accent-green/5 border-accent-green/20 text-accent-green/80' : 'bg-accent-red/5 border-accent-red/20 text-accent-red/80'
+          )}>Trend {signal.trend === 'BULL' ? '▲' : '▼'}</span>
           <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-            signal.orbBreak ? 'bg-accent-cyan/5 border-accent-cyan/20 text-accent-cyan/80' : 'bg-bg-border/40 border-bg-border text-text-muted'
-          )}>ORB {signal.orbBreak ? '✓' : '—'}</span>
-          <span className="font-body text-xs px-2 py-0.5 rounded border bg-accent-purple/5 border-accent-purple/20 text-accent-purple/80">{signal.regime}</span>
+            signal.volOk !== false ? 'bg-accent-cyan/5 border-accent-cyan/20 text-accent-cyan/80' : 'bg-bg-border/40 border-bg-border text-text-muted'
+          )}>Vol OK {signal.volOk !== false ? '✓' : '—'}</span>
         </div>
 
         {execResult && (
@@ -136,8 +125,6 @@ export default function Signals() {
   const { signals, executionMode, settings } = useStore()
   const [filter, setFilter] = useState('ALL')
   const filtered = signals.filter(s => {
-    if (filter === 'ACTIVE')  return s.status === 'ACTIVE'
-    if (filter === 'PENDING') return s.status === 'PENDING'
     if (filter === 'LONG')    return s.direction === 'LONG'
     if (filter === 'SHORT')   return s.direction === 'SHORT'
     return true
@@ -146,9 +133,9 @@ export default function Signals() {
     <div className="space-y-5 animate-fade-in">
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: 'Active',  value: signals.filter(s => s.status === 'ACTIVE').length,  color: 'text-accent-green' },
-          { label: 'Pending', value: signals.filter(s => s.status === 'PENDING').length, color: 'text-accent-yellow' },
-          { label: 'Total',   value: signals.length,                                     color: 'text-accent-cyan' },
+          { label: 'Long',  value: signals.filter(s => s.direction === 'LONG').length,  color: 'text-accent-green' },
+          { label: 'Short', value: signals.filter(s => s.direction === 'SHORT').length, color: 'text-accent-red' },
+          { label: 'Total', value: signals.length,                                      color: 'text-accent-cyan' },
         ].map(s => (
           <div key={s.label} className="card p-4 text-center">
             <div className={clsx('font-display text-2xl font-bold', s.color)}>{s.value}</div>
@@ -174,10 +161,10 @@ export default function Signals() {
             : 'View-only mode — switch to Semi or Full-Auto to trade'}
           </div>
         </div>
-        <span className="font-body text-xs text-text-muted">ML ≥ {(settings.mlThreshold * 100).toFixed(0)}%</span>
+        <span className="font-body text-xs text-text-muted">RR &ge; {settings.minRR}:1</span>
       </div>
       <div className="flex gap-1 bg-bg-card border border-bg-border rounded-lg p-1 w-fit">
-        {['ALL','ACTIVE','PENDING','LONG','SHORT'].map(f => (
+        {['ALL','LONG','SHORT'].map(f => (
           <button key={f} onClick={() => setFilter(f)}
             className={clsx('px-2.5 py-1 rounded-md font-body text-xs transition-all',
               filter === f ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20' : 'text-text-muted hover:text-text-secondary'

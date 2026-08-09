@@ -138,18 +138,22 @@ export default function Settings() {
           <Shield size={16} className="text-accent-cyan" />
           <h3 className="font-display text-sm font-bold text-text-primary">Risk Management</h3>
         </div>
-        <SliderField label="Risk Per Trade" desc="% of portfolio risked per position"
-          value={local.riskPerTrade} min={0.5} max={5} step={0.5} unit="%"
-          onChange={v => update('riskPerTrade', v)}
-          danger={local.riskPerTrade > 2} />
-        <SliderField label="Minimum R:R Ratio" desc="Skip signals below this threshold"
+        <SliderField label="Risk Per Trade — XRP" desc="% of portfolio risked per XRPUSDT position"
+          value={local.riskPerTrade.XRPUSDT} min={0.5} max={10} step={0.5} unit="%"
+          onChange={v => update('riskPerTrade', { ...local.riskPerTrade, XRPUSDT: v })}
+          danger={local.riskPerTrade.XRPUSDT > 6} />
+        <SliderField label="Risk Per Trade — ETH" desc="% of portfolio risked per ETHUSDT position"
+          value={local.riskPerTrade.ETHUSDT} min={0.5} max={10} step={0.5} unit="%"
+          onChange={v => update('riskPerTrade', { ...local.riskPerTrade, ETHUSDT: v })}
+          danger={local.riskPerTrade.ETHUSDT > 5} />
+        <SliderField label="Minimum R:R Ratio" desc="Skip signals below this threshold — the validated strategy always fires at exactly 3:1"
           value={local.minRR} min={1} max={5} step={0.5} unit=":1"
           onChange={v => update('minRR', v)} />
-        <SliderField label="Daily Loss Limit" desc="Auto-pause trading when hit"
-          value={local.dailyLossLimit} min={1} max={10} step={0.5} unit="%"
+        <SliderField label="Daily Loss Limit" desc="Safety net only — not itself backtested. Set high enough that it only trips on a genuine malfunction, not a normal losing trade"
+          value={local.dailyLossLimit} min={5} max={40} step={1} unit="%"
           onChange={v => update('dailyLossLimit', v)}
-          danger={local.dailyLossLimit > 5} />
-        <SliderField label="Max Trades Per Day" desc="Hard cap on daily executions"
+          danger={local.dailyLossLimit < 10} />
+        <SliderField label="Max Trades Per Day" desc="Hard cap on daily executions (signals average less than 1/day, so this rarely binds)"
           value={local.maxTradesPerDay} min={1} max={10} step={1} unit=""
           onChange={v => update('maxTradesPerDay', v)} />
       </div>
@@ -160,20 +164,16 @@ export default function Settings() {
           <Zap size={16} className="text-accent-yellow" />
           <h3 className="font-display text-sm font-bold text-text-primary">Strategy Parameters</h3>
         </div>
-        <SelectField label="ORB Timeframe" desc="Opening Range Breakout candle size"
-          value={local.orbTimeframe}
-          options={[{value:5,label:'5 minutes'},{value:15,label:'15 minutes'},{value:30,label:'30 minutes'}]}
-          onChange={v => update('orbTimeframe', parseInt(v))} />
-        <SelectField label="Break-Even Trigger" desc="Move SL to BE when RR achieved"
+        <div className="py-3 border-b border-bg-border/50 font-body text-xs text-text-muted leading-relaxed">
+          Trend filter, entry trigger, and volatility filter are fixed per symbol
+          (SMA-cross trend + candle-structure entry + ATR volatility exclusion) —
+          not exposed here, since they're the validated combination, not independent
+          dials. See README for exact values.
+        </div>
+        <SelectField label="Break-Even Trigger" desc="Move SL to BE when this RR is achieved"
           value={local.beTrigger}
-          options={[{value:0.5,label:'At 1:0.5'},{value:1,label:'At 1:1'},{value:1.5,label:'At 1:1.5'}]}
+          options={[{value:0.5,label:'At 1:0.5'},{value:1,label:'At 1:1'},{value:1.5,label:'At 1:1.5 (validated default)'}]}
           onChange={v => update('beTrigger', parseFloat(v))} />
-        <SliderField label="ML Filter Threshold" desc="Minimum confidence to take a trade"
-          value={Math.round(local.mlThreshold * 100)} min={50} max={90} step={5} unit="%"
-          onChange={v => update('mlThreshold', v / 100)} />
-        <Toggle value={local.trailingStop} onChange={v => update('trailingStop', v)}
-          label="Trailing Stop Loss"
-          desc="Automatically trail SL as price moves in your favor" />
       </div>
 
       {/* Exchange */}

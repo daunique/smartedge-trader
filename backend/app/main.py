@@ -117,42 +117,28 @@ manager = ConnectionManager()
 
 # ── Full-Auto watcher ─────────────────────────────────────────────
 async def full_auto_watcher():
-    # Bug fix: the previous version only scanned for executable signals when
-    # the TOTAL COUNT of active signals changed from the prior 30s check
-    # ("if new_count != last_signal_count"). This silently skipped execution
-    # whenever the count happened to stay the same between checks even though
-    # the underlying signals had changed (e.g. one signal expired at the same
-    # time a new one appeared, or the new signal simply wasn't examined before
-    # an already-executed one hit the daily limit break). Since signals expire
-    # on a rolling 4-hour window and get replaced continuously, a flat count
-    # across two consecutive 30s checks is a normal, common occurrence — not
-    # an edge case — which meant real ACTIVE signals were regularly never
-    # reaching execute_signal() at all. Now every 30s tick checks every
-    # currently active signal directly against executed_ids, with no count
-    # gate in front of it.
     print("[AUTO] Full-auto watcher started")
+    last_signal_count = 0
     while True:
         try:
             if auto_executor.mode == "FULL-AUTO" and not auto_executor.paused:
-                signals = signal_engine.get_active()
-                for sig in signals:
-                    if auto_executor.trades_today >= auto_executor.settings.get("maxTradesPerDay", 3):
-                        break
-                    if sig.get("status") == "ACTIVE" and sig.get("id") not in auto_executor.executed_ids:
-                        print(f"[AUTO] Executing: {sig['symbol']} {sig['direction']}")
-                        result = await auto_executor.execute_signal(sig)
-                        if result.get("success"):
-                            await manager.broadcast({
-                                "type": "auto_executed",
-                                "result": result,
-                                "timestamp": datetime.utcnow().isoformat(),
-                            })
-                        else:
-                            # Surface WHY execution failed instead of silently
-                            # dropping it — this was previously invisible in
-                            # logs, making failures indistinguishable from
-                            # "nothing happened yet".
-                            print(f"[AUTO] Execution failed for {sig['symbol']}: {result.get('reason') or result.get('error')}")
+                signals   = signal_engine.get_active()
+                new_count = len(signals)
+                if new_count != last_signal_count:
+                    last_signal_count = new_count
+                    for sig in signals:
+                        if auto_executor.trades_today >= auto_executor.settings.get("maxTradesPerDay", 3):
+                            print(f"[AUTO] Daily limit hit ({auto_executor.trades_today}) — stopping")
+                            break
+                        if sig.get("status") == "ACTIVE" and sig.get("id") not in auto_executor.executed_ids:
+                            print(f"[AUTO] Executing: {sig['symbol']} {sig['direction']}")
+                            result = await auto_executor.execute_signal(sig)
+                            if result.get("success"):
+                                await manager.broadcast({
+                                    "type": "auto_executed",
+                                    "result": result,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                })
         except Exception as e:
             print(f"[AUTO] Error: {e}")
         await asyncio.sleep(30)
@@ -274,7 +260,7 @@ async def get_positions():
                 "pnlPct":      round(pct, 4),
                 "status":      "BE" if sl == entry and entry > 0 else "OPEN",
                 "rrAchieved":  round(rr, 2),
-                "mlScore":     0, "market": "crypto",
+                "market":      "crypto",
                 "openTime":    ts_to_iso(p.get("createdTime") or "0"),
             })
         return {"positions": positions, "source": "bybit_demo"}
@@ -327,7 +313,6 @@ async def get_history(limit: int = 100):
                 "runningPnl": round(running, 4),
                 "status":     status,
                 "rr":         "0",
-                "mlScore":    0,
                 "date":       ts_to_iso(created),
                 "market":     "crypto",
                 "duration":   "—",
@@ -343,8 +328,6 @@ async def get_history(limit: int = 100):
 @app.post("/api/settings")
 async def update_settings(settings: dict):
     auto_executor.update_settings(settings)
-    if "mlThreshold" in settings:
-        signal_engine.threshold = float(settings["mlThreshold"])
     return {"success": True, "settings": settings}
 
 @app.post("/api/mode/{mode}")
@@ -418,7 +401,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "tp":        float(p.get("takeProfit") or 0),
                             "sl":        sl,
                             "status":    "BE" if sl == entry and entry > 0 else "OPEN",
-                            "rrAchieved": 0, "mlScore": 0, "market": "crypto",
+                            "rrAchieved": 0, "market": "crypto",
                         })
                 await manager.broadcast({
                     "type": "position_update",
