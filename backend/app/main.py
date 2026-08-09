@@ -151,6 +151,40 @@ async def daily_reset():
         auto_executor.reset_daily()
         print("[RESET] Daily counters reset")
 
+# ── Keep-alive ────────────────────────────────────────────────────
+# Render free tier spins this service down after 15 min with zero inbound
+# traffic — and once asleep, signal_engine.run() and run_be_monitor() stop
+# executing entirely (open positions go unmonitored, no new signals fire).
+# This pings the backend's OWN public /health endpoint every 10 minutes
+# (comfortably under the 15-min threshold, not wastefully frequent) to keep
+# generating inbound traffic. This is a workaround, not a guarantee: it only
+# keeps an already-running instance awake, it cannot wake one that's already
+# spun down (that needs an external visitor/request), and Render's free tier
+# is capped at 750 instance-hours/workspace/month — running this 24/7 uses
+# ~730 of those on the backend alone, so there's very little headroom left
+# for the frontend service or anything else in the same workspace. If uptime
+# genuinely matters (open positions, live capital), Render's own guidance is
+# that a paid instance -- which doesn't spin down at all -- is the reliable
+# fix; this keep-alive is the free-tier best-effort version of that.
+KEEPALIVE_INTERVAL_S = 600  # 10 min -- 5 min of margin under the 15 min limit
+SELF_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("SELF_URL")
+
+async def keepalive_ping():
+    if not SELF_URL:
+        print("[KEEPALIVE] No RENDER_EXTERNAL_URL/SELF_URL set -- skipping "
+              "(expected when running locally; set SELF_URL to test)")
+        return
+    url = f"{SELF_URL.rstrip('/')}/health"
+    print(f"[KEEPALIVE] Pinging {url} every {KEEPALIVE_INTERVAL_S}s")
+    async with httpx.AsyncClient(timeout=15) as client:
+        while True:
+            await asyncio.sleep(KEEPALIVE_INTERVAL_S)
+            try:
+                r = await client.get(url)
+                print(f"[KEEPALIVE] {r.status_code} @ {datetime.utcnow().isoformat()}")
+            except Exception as e:
+                print(f"[KEEPALIVE] ping failed: {e}")
+
 # ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -162,6 +196,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(auto_executor.run_be_monitor())
     asyncio.create_task(full_auto_watcher())
     asyncio.create_task(daily_reset())
+    asyncio.create_task(keepalive_ping())
     print("   All engines started ✅")
     yield
     signal_engine.stop()

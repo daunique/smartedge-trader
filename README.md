@@ -64,6 +64,21 @@ npm run dev
 Defaults to `BYBIT_TESTNET=true` / `ACCOUNT_MODE=DEMO`. Confirm both are
 still set that way before switching to live trading with real funds.
 
+## Keep-alive
+
+Render's free tier spins the backend down after 15 min with no inbound
+traffic — and once asleep, signal scanning and the breakeven monitor stop
+running entirely, so open positions go unwatched. The backend pings its own
+`/health` every 10 minutes (`RENDER_EXTERNAL_URL`, set automatically on
+Render) to prevent that.
+
+This is a best-effort workaround, not a guarantee — it can't wake an
+instance that's already spun down, and running 24/7 this way uses ~730 of
+Render's 750 free instance-hours/month by itself, leaving little headroom
+for the frontend service in the same workspace. If you're holding live
+positions and uptime actually matters, a paid Render instance (no spin-down
+at all) is the reliable version of this, not the free-tier ping.
+
 ## Changed from the original template
 
 - Strategy replaced end-to-end (was VWAP + Opening Range Breakout on 15m
