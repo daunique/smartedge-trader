@@ -120,6 +120,22 @@ export const useStore = create(
     }),
     {
       name: 'smartedge-v3',
+      version: 1,   // bump whenever the persisted `settings` shape changes
+      // Browsers with settings cached from before riskPerTrade became a
+      // per-symbol object (or from the old ML/ORB template fields) would
+      // otherwise rehydrate the stale shape and silently corrupt it again --
+      // this is what caused the 500 on /api/execute. Normalize on load
+      // instead of trusting whatever's in localStorage.
+      migrate: (persistedState, fromVersion) => {
+        const s = persistedState?.settings || {}
+        const legacyKeys = ['mlThreshold', 'orbTimeframe', 'trailingStop']
+        legacyKeys.forEach(k => delete s[k])
+        const riskPerTrade = (s.riskPerTrade && typeof s.riskPerTrade === 'object')
+          ? { ...DEFAULT_SETTINGS.riskPerTrade, ...s.riskPerTrade }
+          : DEFAULT_SETTINGS.riskPerTrade   // legacy flat number (or missing) -> current defaults
+        persistedState.settings = { ...DEFAULT_SETTINGS, ...s, riskPerTrade }
+        return persistedState
+      },
       partialize: (state) => ({
         executionMode: state.executionMode,
         accountMode:   state.accountMode,

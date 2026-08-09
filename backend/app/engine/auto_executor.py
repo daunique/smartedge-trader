@@ -163,7 +163,27 @@ class AutoExecutor:
     def set_broadcast(self, cb): self.broadcast_cb = cb
     def set_mode(self, mode):    self.mode = mode
     def set_paused(self, v):     self.paused = v
-    def update_settings(self, s): self.settings.update(s)
+    def update_settings(self, s):
+        # Validate/normalize rather than blindly overwrite -- a malformed
+        # payload (e.g. riskPerTrade sent as a bare number by a stale
+        # frontend build) must not be allowed to replace the per-symbol
+        # dict structure this class depends on elsewhere.
+        s = dict(s)
+        if "riskPerTrade" in s:
+            rpt = s["riskPerTrade"]
+            if isinstance(rpt, dict):
+                merged = dict(self.settings["riskPerTrade"])
+                merged.update({k: float(v) for k, v in rpt.items()})
+                s["riskPerTrade"] = merged
+            elif isinstance(rpt, (int, float)):
+                # Legacy flat value: apply to both symbols rather than reject outright.
+                print(f"[SETTINGS] riskPerTrade sent as a flat number ({rpt}) -- "
+                      f"expected a per-symbol object, applying to both symbols")
+                s["riskPerTrade"] = {sym: float(rpt) for sym in RISK_PER_TRADE_PCT}
+            else:
+                print(f"[SETTINGS] riskPerTrade had an unexpected type ({type(rpt)}) -- ignoring, keeping current value")
+                del s["riskPerTrade"]
+        self.settings.update(s)
 
     async def execute_signal(self, signal: dict) -> dict:
         """Execute a single signal — place order on Bybit demo"""
@@ -201,8 +221,15 @@ class AutoExecutor:
         if rr < self.settings["minRR"]:
             return {"success": False, "reason": f"RR too low ({rr:.1f} < {self.settings['minRR']})"}
 
-        # Position size -- risk % is per-symbol (XRP 6% / ETH 5%), not a flat number
-        risk_pct = self.settings["riskPerTrade"].get(symbol_raw, RISK_PER_TRADE_PCT.get(symbol_raw, 1.0))
+        # Position size -- risk % is per-symbol (XRP 6% / ETH 5%), not a flat number.
+        # Defensive against riskPerTrade being a stale flat number (shouldn't happen
+        # post-update_settings-fix, but a currently-running instance may still be
+        # holding one in memory from before a redeploy) rather than crashing execution.
+        rpt = self.settings["riskPerTrade"]
+        if isinstance(rpt, dict):
+            risk_pct = rpt.get(symbol_raw, RISK_PER_TRADE_PCT.get(symbol_raw, 1.0))
+        else:
+            risk_pct = float(rpt) if isinstance(rpt, (int, float)) else RISK_PER_TRADE_PCT.get(symbol_raw, 1.0)
         qty = calc_position_size(
             balance      = check.balance,
             risk_pct     = risk_pct,
