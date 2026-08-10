@@ -111,4 +111,12 @@ at all) is the reliable version of this, not the free-tier ping.
   the exchange account was never actually configured to allow (Bybit
   leverage is a persistent per-symbol account setting, not a per-order
   param), causing "insufficient margin" rejections on otherwise-correctly-
-  sized trades -- leverage is now set explicitly before every order.
+  sized trades -- leverage is now set explicitly before every order; and
+  most seriously, a position could end up open with no stop-loss attached
+  at all (cause not fully certain even after checking Bybit's own docs, so
+  treated as a "must not trust it silently worked" problem, not a one-
+  parameter fix) -- entry now verifies the SL actually landed and sets it
+  explicitly if not, and the BE monitor checks every open position for a
+  missing SL on every 30s pass (not just at entry) and sets an emergency
+  ATR-based stop immediately if one is ever found naked, regardless of how
+  it got that way.

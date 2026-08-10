@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
 from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_today_utc
+from app.engine.signal_engine import fetch_candles, wilder_atr_series, SL_ATR_MULT, ATR_PERIOD
 
 # ── Position sizing ───────────────────────────────────────────────
 MAX_LEVERAGE = {"XRPUSDT": 15.0, "ETHUSDT": 20.0}  # matches the backtest's safety ceiling
@@ -216,7 +217,9 @@ class AutoExecutor:
         # time; safe to call even when already at that value.
         await self._ensure_leverage(symbol_raw, MAX_LEVERAGE.get(symbol_raw, 10.0))
 
-        # Place order
+        # Place order. tpOrderType/slOrderType added explicitly per Bybit's
+        # own documented example (docs show these set even for market-
+        # triggered TP/SL) rather than relying on an undocumented default.
         body = {
             "category":    "linear",
             "symbol":      symbol_raw,
@@ -227,6 +230,8 @@ class AutoExecutor:
             "stopLoss":    str(round(sl, 6)),
             "tpTriggerBy": "MarkPrice",
             "slTriggerBy": "MarkPrice",
+            "tpOrderType": "Market",
+            "slOrderType": "Market",
             "timeInForce": "IOC",
         }
 
@@ -237,6 +242,15 @@ class AutoExecutor:
                 self.trades_today += 1
                 order_id = result["result"].get("orderId")
                 print(f"[EXECUTOR] ✅ Order placed: {order_id}")
+
+                # Verify SL actually attached rather than assume the
+                # order-create params were honored -- this position is
+                # what was open with no stop protecting it, and the cause
+                # wasn't fully certain even after reviewing Bybit's own
+                # docs, so this is a safety net, not a bet that the params
+                # above are now definitely sufficient on their own.
+                await asyncio.sleep(1.5)  # let the fill/position update propagate
+                await self._verify_and_protect(symbol_raw, sl, tp)
 
                 # Broadcast execution event
                 if self.broadcast_cb:
@@ -293,6 +307,77 @@ class AutoExecutor:
             print(f"[EXECUTOR] Leverage set exception for {symbol_raw}: {e} -- attempting order anyway")
             return False
 
+    async def _verify_and_protect(self, symbol_raw: str, intended_sl: float, intended_tp: float):
+        """Confirm SL actually landed on the position after order creation;
+        if not, set it explicitly rather than leave the position naked
+        until the next 30s monitor pass. This is what should have caught
+        the case where an open position had no SL at all."""
+        try:
+            data = await bybit_get("/v5/position/list",
+                                   {"category": "linear", "symbol": symbol_raw, "settleCoin": "USDT"})
+            if data.get("retCode") != 0:
+                print(f"[EXECUTOR] Could not verify SL for {symbol_raw}: {data.get('retMsg')}")
+                return
+            plist = data["result"].get("list", [])
+            pos = next((p for p in plist if float(p.get("size") or 0) > 0), None)
+            if not pos:
+                return  # already closed/no position -- nothing to protect
+            current_sl = float(pos.get("stopLoss") or 0)
+            if current_sl > 0:
+                return  # attached correctly, nothing to do
+            print(f"[EXECUTOR] ⚠ {symbol_raw} opened with no SL attached -- setting it now")
+            result = await bybit_post("/v5/position/trading-stop", {
+                "category":    "linear",
+                "symbol":      symbol_raw,
+                "stopLoss":    str(round(intended_sl, 6)),
+                "takeProfit":  str(round(intended_tp, 6)),
+                "slTriggerBy": "MarkPrice",
+                "tpTriggerBy": "MarkPrice",
+                "positionIdx": 0,
+            })
+            if result.get("retCode") == 0:
+                print(f"[EXECUTOR] SL set as fallback for {symbol_raw}: {intended_sl}")
+            else:
+                print(f"[EXECUTOR] ❌ Fallback SL-set FAILED for {symbol_raw}: {result.get('retMsg')} -- still unprotected")
+        except Exception as e:
+            print(f"[EXECUTOR] SL verification error for {symbol_raw}: {e}")
+
+    async def _ensure_position_protected(self, pos: dict) -> float:
+        """Called from the monitor loop on every open position, every 30s --
+        not just at entry. Catches a naked (no-SL) position regardless of
+        how it got that way (a failed entry-time attach that verification
+        also missed, a manual exchange-side change, anything), using a
+        freshly-computed ATR stop from current price since the original
+        entry-time SL isn't available once we're this far removed from the
+        entry order. Returns the SL now in effect (possibly unchanged)."""
+        if pos["sl"] > 0:
+            return pos["sl"]
+        symbol_raw = pos["symbol"]
+        print(f"[EXECUTOR] ⚠ {symbol_raw} has an OPEN position with NO stop-loss -- protecting it now")
+        try:
+            candles = await fetch_candles(symbol_raw, interval="60", limit=100)
+            if len(candles) < ATR_PERIOD + 5:
+                print(f"[EXECUTOR] Not enough candles to compute an emergency SL for {symbol_raw}")
+                return 0.0
+            atr = wilder_atr_series(candles, ATR_PERIOD)[-1]
+            if not atr or atr <= 0:
+                return 0.0
+            current = pos["current"]
+            sl = current - SL_ATR_MULT * atr if pos["direction"] == "LONG" else current + SL_ATR_MULT * atr
+            result = await bybit_post("/v5/position/trading-stop", {
+                "category": "linear", "symbol": symbol_raw,
+                "stopLoss": str(round(sl, 6)), "slTriggerBy": "MarkPrice",
+                "positionIdx": 0,
+            })
+            if result.get("retCode") == 0:
+                print(f"[EXECUTOR] Emergency SL set for {symbol_raw}: {sl}")
+                return sl
+            print(f"[EXECUTOR] ❌ Emergency SL set FAILED for {symbol_raw}: {result.get('retMsg')}")
+            return 0.0
+        except Exception as e:
+            print(f"[EXECUTOR] Emergency SL error for {symbol_raw}: {e}")
+            return 0.0
+
     async def update_break_even(self, position: dict) -> bool:
         """Move SL to entry when BE trigger is hit"""
         symbol_raw = position["symbol"].replace("/", "")
@@ -301,6 +386,9 @@ class AutoExecutor:
         sl         = float(position.get("sl", 0))
         direction  = position.get("direction")
         be_trigger = self.settings.get("beTrigger", 1.0)
+
+        if sl == 0:
+            return False  # no valid SL to compute R-multiples from -- caller must protect first, not guess a risk denominator
 
         risk = abs(entry - sl)
         if risk == 0: return False
@@ -345,6 +433,8 @@ class AutoExecutor:
                                 "current":   float(p.get("markPrice") or 0),
                                 "sl":        float(p.get("stopLoss")  or 0),
                             }
+                            if pos["sl"] == 0:
+                                pos["sl"] = await self._ensure_position_protected(pos)
                             await self.update_break_even(pos)
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
