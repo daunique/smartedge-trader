@@ -204,6 +204,18 @@ class AutoExecutor:
               f"qty={qty} entry={entry} tp={tp} sl={sl} "
               f"risk={risk_pct}% RR=1:{rr:.1f}")
 
+        # calc_position_size above assumes up to max_leverage is available on
+        # the exchange, but Bybit leverage is a persistent per-symbol account
+        # setting, not something passed per-order -- if the account was ever
+        # left at Bybit's default (often 1x for a symbol never explicitly
+        # configured), a position sized assuming e.g. 7.6x needs the FULL
+        # notional in margin at 1x, not the fraction the sizing math assumed.
+        # That's what "ab not enough for new order" (Bybit's insufficient-
+        # margin error, "ab" = available balance) actually was here -- not
+        # an empty account, a leverage mismatch. Set it explicitly every
+        # time; safe to call even when already at that value.
+        await self._ensure_leverage(symbol_raw, MAX_LEVERAGE.get(symbol_raw, 10.0))
+
         # Place order
         body = {
             "category":    "linear",
@@ -255,6 +267,31 @@ class AutoExecutor:
         except Exception as e:
             print(f"[EXECUTOR] Exception: {e}")
             return {"success": False, "reason": str(e)}
+
+    async def _ensure_leverage(self, symbol_raw: str, leverage: float) -> bool:
+        """Set both sides' leverage for a symbol before trading it. Bybit
+        returns retCode 110043 ("leverage not modified") when it's already
+        at the requested value -- that's a success case, not an error, and
+        is expected on every call after the first for a given symbol."""
+        try:
+            result = await bybit_post("/v5/position/set-leverage", {
+                "category":     "linear",
+                "symbol":       symbol_raw,
+                "buyLeverage":  str(leverage),
+                "sellLeverage": str(leverage),
+            })
+            code = result.get("retCode")
+            if code == 0:
+                print(f"[EXECUTOR] Leverage set: {symbol_raw} -> {leverage}x")
+                return True
+            if code == 110043 or "not modified" in str(result.get("retMsg", "")).lower():
+                return True  # already at this leverage -- fine
+            print(f"[EXECUTOR] Leverage set failed for {symbol_raw}: "
+                  f"{result.get('retMsg')} (retCode={code}) -- attempting order anyway")
+            return False
+        except Exception as e:
+            print(f"[EXECUTOR] Leverage set exception for {symbol_raw}: {e} -- attempting order anyway")
+            return False
 
     async def update_break_even(self, position: dict) -> bool:
         """Move SL to entry when BE trigger is hit"""

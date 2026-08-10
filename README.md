@@ -107,4 +107,8 @@ at all) is the reliable version of this, not the free-tier ping.
   closing a position from the dashboard called Bybit's order-cancel endpoint
   against an open position (wrong endpoint for that) with no UI button that
   could even reach it -- now a real reduce-only close order, with a Close
-  button on each position.
+  button on each position; orders were also being sized assuming leverage
+  the exchange account was never actually configured to allow (Bybit
+  leverage is a persistent per-symbol account setting, not a per-order
+  param), causing "insufficient margin" rejections on otherwise-correctly-
+  sized trades -- leverage is now set explicitly before every order.
