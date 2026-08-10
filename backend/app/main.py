@@ -6,99 +6,19 @@ Live Bybit Demo + Signal Engine + Auto Execution
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import asyncio, json, os, hmac, hashlib, time
+import asyncio, json, os
 import httpx
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from app.engine.signal_engine import signal_engine
 from app.engine.auto_executor import auto_executor
+from app.bybit_client import (
+    DEMO_BASE, get_api_key, bybit_get, bybit_post,
+    get_order_pnl, get_order_rr, ts_to_iso, is_today_utc,
+)
 from dataclasses import asdict
 
 load_dotenv()
-
-DEMO_BASE = "https://api-demo.bybit.com"
-
-# Bug fix: API_KEY/API_SECRET were previously read once at module import time
-# and cached as module-level constants. Any credential rotation in Render's
-# environment required a full process restart to take effect — and if the
-# process happened to import this module before env injection completed,
-# it would silently cache an empty or stale value for the process lifetime,
-# producing "API key is invalid" even with genuinely fresh, correct keys in
-# the dashboard. Now read fresh from the environment on every single call.
-def get_api_key() -> str:
-    return os.getenv("BYBIT_API_KEY", "")
-
-def get_api_secret() -> str:
-    return os.getenv("BYBIT_API_SECRET", "")
-
-def sign_headers(params: dict) -> dict:
-    api_key    = get_api_key()
-    api_secret = get_api_secret()
-    ts          = str(int(time.time() * 1000))
-    recv_window = "20000"
-    param_str   = ts + api_key + recv_window + "&".join(
-        f"{k}={v}" for k, v in sorted(params.items())
-    )
-    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    return {
-        "X-BAPI-API-KEY":     api_key,
-        "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        sig,
-        "X-BAPI-RECV-WINDOW": recv_window,
-    }
-
-async def bybit_get(path: str, params: dict = {}) -> dict:
-    headers = sign_headers(params)
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{DEMO_BASE}{path}", params=params, headers=headers)
-        return r.json()
-
-async def bybit_post(path: str, body: dict = {}) -> dict:
-    api_key     = get_api_key()
-    api_secret  = get_api_secret()
-    ts          = str(int(time.time() * 1000))
-    recv_window = "20000"
-    body_str    = json.dumps(body)
-    param_str   = ts + api_key + recv_window + body_str
-    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-BAPI-API-KEY":     api_key,
-        "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        sig,
-        "X-BAPI-RECV-WINDOW": recv_window,
-        "Content-Type":       "application/json",
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(f"{DEMO_BASE}{path}", content=body_str, headers=headers)
-        return r.json()
-
-def get_order_pnl(o: dict) -> float:
-    """
-    Extract real P&L from Bybit order.
-    Bybit Demo stores realized P&L in closedPnl for closed positions.
-    For open/filled orders, we calculate from execPrice vs avgPrice.
-    """
-    # Try closedPnl first (set when position closes)
-    closed = o.get("closedPnl")
-    if closed and float(closed) != 0:
-        return round(float(closed), 4)
-    # Fall back: cumExecValue minus fees as approximation
-    cum_fee = float(o.get("cumExecFee") or 0)
-    return round(-cum_fee, 4)
-
-def ts_to_iso(ts_str) -> str:
-    """Convert Bybit ms timestamp string to ISO date string"""
-    try:
-        return datetime.utcfromtimestamp(int(ts_str) / 1000).isoformat() + "Z"
-    except:
-        return datetime.utcnow().isoformat() + "Z"
-
-def is_today_utc(ts_str) -> bool:
-    try:
-        d = datetime.utcfromtimestamp(int(ts_str) / 1000).date()
-        return d == datetime.utcnow().date()
-    except:
-        return False
 
 # ── WebSocket Manager ─────────────────────────────────────────────
 class ConnectionManager:
@@ -285,7 +205,7 @@ async def get_positions():
             risk    = abs(entry - sl)
             rr      = abs(pnl / (risk * size)) if risk and size else 0
             positions.append({
-                "id":          p.get("positionIdx") or p.get("symbol"),
+                "id":          p.get("symbol", ""),   # one position per symbol at a time by design -- symbol is the stable, always-unique id (positionIdx is 0 in one-way mode for every position, not a real identifier)
                 "symbol":      p.get("symbol", ""),
                 "direction":   "LONG" if p.get("side") == "Buy" else "SHORT",
                 "entry":       entry, "current": current,
@@ -312,10 +232,18 @@ async def get_signals():
     }
 
 @app.get("/api/history")
-async def get_history(limit: int = 100):
+async def get_history(limit: int = 100, offset: int = 0):
     try:
+        # Bybit v5 order-history pagination is cursor-based, not a simple
+        # numeric offset -- rather than chase cursors, fetch a generous
+        # single batch (200, Bybit's practical per-call ceiling, which
+        # comfortably covers months of this strategy's actual trade volume
+        # at ~1 trade every 1.6-2.3 days) and paginate offset/limit over the
+        # already-fetched list. offset was previously accepted by the
+        # frontend but silently ignored here -- same response every time
+        # regardless of what page was requested.
         data = await bybit_get("/v5/order/history",
-                               {"category": "linear", "limit": str(min(limit, 200))})
+                               {"category": "linear", "limit": "200"})
         if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
 
         trades  = []
@@ -347,15 +275,17 @@ async def get_history(limit: int = 100):
                 "pnl":        round(pnl, 4),
                 "runningPnl": round(running, 4),
                 "status":     status,
-                "rr":         "0",
+                "rr":         get_order_rr(o),
                 "date":       ts_to_iso(created),
                 "market":     "crypto",
                 "duration":   "—",
             })
 
-        # Return newest first
+        # Return newest first, then apply the requested page
         trades.reverse()
-        return {"trades": trades, "total": len(trades), "source": "bybit_demo"}
+        total = len(trades)
+        trades = trades[offset:offset + min(limit, 200)]
+        return {"trades": trades, "total": total, "source": "bybit_demo"}
     except Exception as e:
         print(f"[HISTORY] {e}")
         return {"trades": [], "total": 0, "source": "error", "error": str(e)}
@@ -390,10 +320,40 @@ async def execute_signal(signal_id: str):
     return await auto_executor.execute_signal(asdict(sig))
 
 @app.post("/api/positions/{position_id}/close")
-async def close_position(position_id: str):
+async def close_position(position_id: str, reason: str = "manual"):
+    """position_id is the symbol (see get_positions -- id is always the
+    symbol, one position per symbol by design). Closing an OPEN position on
+    Bybit is a reduce-only market order on the opposite side, not an order
+    cancel -- /v5/order/cancel only cancels orders that haven't filled yet,
+    which is a different thing from a filled position that's already open.
+    The previous implementation called cancel with the position's id as if
+    it were an orderId; it would have errored or silently done nothing
+    against a real open position."""
     try:
-        data = await bybit_post("/v5/order/cancel",
-                                {"category": "linear", "orderId": position_id})
+        symbol = position_id.replace("/", "")
+        pos_data = await bybit_get("/v5/position/list",
+                                   {"category": "linear", "symbol": symbol, "settleCoin": "USDT"})
+        if pos_data.get("retCode") != 0:
+            return {"success": False, "error": pos_data.get("retMsg", "Could not fetch position")}
+        plist = pos_data["result"].get("list", [])
+        pos = next((p for p in plist if float(p.get("size") or 0) > 0), None)
+        if not pos:
+            return {"success": False, "error": "No open position found for this symbol"}
+
+        size = pos["size"]
+        side = pos.get("side")  # "Buy" or "Sell" -- the CURRENT position's side
+        close_side = "Sell" if side == "Buy" else "Buy"  # opposite side closes it
+
+        data = await bybit_post("/v5/order/create", {
+            "category":   "linear",
+            "symbol":     symbol,
+            "side":       close_side,
+            "orderType":  "Market",
+            "qty":        str(size),
+            "reduceOnly": True,
+            "timeInForce": "IOC",
+        })
+        print(f"[POSITIONS] Closing {symbol} ({reason}): qty={size} side={close_side}")
         return {"success": data.get("retCode") == 0, "result": data}
     except Exception as e:
         return {"success": False, "error": str(e)}

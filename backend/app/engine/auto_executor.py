@@ -3,62 +3,11 @@ SmartEdge Trader — Auto Execution Engine
 Handles: Full-Auto order placement, position sizing, TP/SL/BE management
 """
 
-import asyncio, os, json, hmac, hashlib, time
-import httpx
+import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
-
-DEMO_BASE = "https://api-demo.bybit.com"
-
-# Bug fix: same module-level credential caching issue as main.py — reading
-# os.getenv() once at import time meant a Bybit key rotation in Render's
-# environment would not take effect even after a redeploy, if the module
-# had already cached the old (or empty) value. Now read fresh on every call.
-def get_api_key() -> str:
-    return os.getenv("BYBIT_API_KEY", "")
-
-def get_api_secret() -> str:
-    return os.getenv("BYBIT_API_SECRET", "")
-
-# ── Signed requests ───────────────────────────────────────────────
-async def bybit_post(path: str, body: dict) -> dict:
-    api_key     = get_api_key()
-    api_secret  = get_api_secret()
-    ts          = str(int(time.time() * 1000))
-    recv_window = "20000"
-    body_str    = json.dumps(body)
-    param_str   = ts + api_key + recv_window + body_str
-    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-BAPI-API-KEY":     api_key,
-        "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        sig,
-        "X-BAPI-RECV-WINDOW": recv_window,
-        "Content-Type":       "application/json",
-    }
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(f"{DEMO_BASE}{path}", content=body_str, headers=headers)
-        return r.json()
-
-async def bybit_get(path: str, params: dict = {}) -> dict:
-    api_key     = get_api_key()
-    api_secret  = get_api_secret()
-    ts          = str(int(time.time() * 1000))
-    recv_window = "20000"
-    param_str   = ts + api_key + recv_window + "&".join(
-        f"{k}={v}" for k, v in sorted(params.items())
-    )
-    sig = hmac.new(api_secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-BAPI-API-KEY":     api_key,
-        "X-BAPI-TIMESTAMP":   ts,
-        "X-BAPI-SIGN":        sig,
-        "X-BAPI-RECV-WINDOW": recv_window,
-    }
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(f"{DEMO_BASE}{path}", params=params, headers=headers)
-        return r.json()
+from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_today_utc
 
 # ── Position sizing ───────────────────────────────────────────────
 MAX_LEVERAGE = {"XRPUSDT": 15.0, "ETHUSDT": 20.0}  # matches the backtest's safety ceiling
@@ -195,11 +144,10 @@ class AutoExecutor:
         if self.paused:
             return {"success": False, "reason": "System paused"}
 
-        # Sync actual fill count from Bybit before checking limits — trades_today
-        # was previously only tracked in-memory and reset to 0 on every server
-        # restart, so the daily cap could be silently bypassed by a redeploy.
-        # This was defined but never called; now it runs before every execution.
-        await self._sync_trades_today()
+        # Sync actual fill count AND realized daily loss from Bybit before
+        # checking limits -- both were previously either wrong or never
+        # updated at all; see _sync_daily_stats for what that fixes.
+        await self._sync_daily_stats()
 
         # Safety checks
         check = await run_safety_checks(
@@ -367,40 +315,39 @@ class AutoExecutor:
 
     def stop(self): self.running = False
 
-    async def _sync_trades_today(self):
-        """Sync actual trade count from Bybit to prevent exceeding daily limit"""
-        import httpx, hmac, hashlib, time, json, os
+    async def _sync_daily_stats(self):
+        """Sync today's real trade count AND realized P&L from Bybit before
+        every execution -- both matter for the safety checks right after this
+        call, and both were broken before this fix:
+        - trades_today previously counted orderStatus=='New' (unfilled/
+          pending) orders as trades, inflating the count against real fills.
+          IOC market orders resolve almost instantly so this rarely bit in
+          practice, but it's wrong regardless of how often it manifests.
+        - daily_loss was initialized once and only ever reset to 0.0 -- 
+          nothing anywhere updated it with real losses, so the "daily loss
+          limit" safety check always saw 0% and could never trip. It looked
+          like a working circuit breaker in the settings UI; it wasn't one.
+        """
         try:
-            ts          = str(int(time.time() * 1000))
-            recv_window = '20000'
-            params      = {'category': 'linear', 'limit': '50'}
-            param_str   = ts + os.getenv('BYBIT_API_KEY','') + recv_window + '&'.join(f'{k}={v}' for k,v in sorted(params.items()))
-            sig = hmac.new(os.getenv('BYBIT_API_SECRET','').encode(), param_str.encode(), hashlib.sha256).hexdigest()
-            headers = {
-                'X-BAPI-API-KEY': os.getenv('BYBIT_API_KEY',''),
-                'X-BAPI-TIMESTAMP': ts,
-                'X-BAPI-SIGN': sig,
-                'X-BAPI-RECV-WINDOW': recv_window,
-            }
-            from datetime import datetime, timezone
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get('https://api-demo.bybit.com/v5/order/history', params=params, headers=headers)
-                data = r.json()
-            if data.get('retCode') == 0:
-                today = datetime.now(timezone.utc).date().isoformat()
-                count = 0
-                for o in data['result'].get('list', []):
-                    created = o.get('createdTime') or '0'
-                    try:
-                        order_date = datetime.utcfromtimestamp(int(created)/1000).date().isoformat()
-                    except:
-                        order_date = ''
-                    if order_date == today and o.get('orderStatus') in ('Filled','PartiallyFilled','New'):
-                        count += 1
-                self.trades_today = count
-                print(f'[EXECUTOR] Synced trades today: {count}')
+            data = await bybit_get("/v5/order/history", {"category": "linear", "limit": "50"})
+            if data.get("retCode") != 0:
+                return
+            trades_today = 0
+            daily_loss   = 0.0
+            for o in data["result"].get("list", []):
+                if not is_today_utc(o.get("createdTime") or "0"):
+                    continue
+                if o.get("orderStatus") not in ("Filled", "PartiallyFilled"):
+                    continue
+                trades_today += 1
+                pnl = get_order_pnl(o)
+                if pnl < 0:
+                    daily_loss += abs(pnl)
+            self.trades_today = trades_today
+            self.daily_loss   = daily_loss
+            print(f"[EXECUTOR] Synced: {trades_today} trades today, ${daily_loss:.2f} realized loss today")
         except Exception as e:
-            print(f'[EXECUTOR] Sync error: {e}')
+            print(f"[EXECUTOR] Sync error: {e}")
 
     def reset_daily(self):
         self.trades_today = 0

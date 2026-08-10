@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import {
   TrendingUp, TrendingDown, Activity, Target, Zap,
-  Clock, BarChart2, Shield
+  Clock, BarChart2, Shield, X
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useStore } from '../../store'
+import { api } from '../../services/api'
 import clsx from 'clsx'
 import { format } from 'date-fns'
 
@@ -63,6 +64,27 @@ function StatCard({ label, value, sub, subColor, icon: Icon, iconColor }) {
 function PositionRow({ position }) {
   const isLong   = position.direction === 'LONG'
   const progress = Math.min(100, Math.max(0, (position.rrAchieved / 3) * 100))
+  const closePositionInStore = useStore(s => s.closePosition)
+  const [closing, setClosing]     = useState(false)
+  const [confirming, setConfirming] = useState(false)
+
+  const handleClose = async () => {
+    if (!confirming) {
+      setConfirming(true)
+      setTimeout(() => setConfirming(false), 4000)  // auto-reset if they don't confirm
+      return
+    }
+    setClosing(true)
+    const result = await api.closePosition(position.id, 'manual')
+    setClosing(false)
+    setConfirming(false)
+    if (result?.success) {
+      closePositionInStore(position.id)
+    } else {
+      alert(`Failed to close ${position.symbol}: ${result?.error || result?.result?.retMsg || 'unknown error'}`)
+    }
+  }
+
   const statusCfg = {
     OPEN: { color: 'text-accent-cyan',   label: 'OPEN' },
     BE:   { color: 'text-accent-yellow', label: 'BE ✓' },
@@ -97,13 +119,24 @@ function PositionRow({ position }) {
           {statusCfg[position.status]?.label || position.status}
         </div>
       </div>
-      <div className="col-span-4 sm:col-span-2 text-right">
-        <div className={clsx('font-display text-sm font-bold', position.pnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-          {position.pnl >= 0 ? '+' : ''}${(position.pnl || 0).toFixed(2)}
+      <div className="col-span-4 sm:col-span-2 text-right flex items-center justify-end gap-2">
+        <div>
+          <div className={clsx('font-display text-sm font-bold', position.pnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+            {position.pnl >= 0 ? '+' : ''}${(position.pnl || 0).toFixed(2)}
+          </div>
+          <div className={clsx('font-body text-xs', position.pnl >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
+            {position.pnl >= 0 ? '+' : ''}{(position.pnlPct || 0).toFixed(2)}%
+          </div>
         </div>
-        <div className={clsx('font-body text-xs', position.pnl >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
-          {position.pnl >= 0 ? '+' : ''}{(position.pnlPct || 0).toFixed(2)}%
-        </div>
+        <button onClick={handleClose} disabled={closing}
+          title={confirming ? 'Click again to confirm' : 'Close position'}
+          className={clsx('shrink-0 w-6 h-6 rounded-md flex items-center justify-center transition-colors border',
+            confirming ? 'bg-accent-red/20 border-accent-red/50 text-accent-red'
+                       : 'bg-bg-elevated border-bg-border text-text-muted hover:text-accent-red hover:border-accent-red/40',
+            closing && 'opacity-50 cursor-wait'
+          )}>
+          <X size={12} />
+        </button>
       </div>
     </div>
   )
@@ -190,7 +223,6 @@ export default function Dashboard() {
     weeklyPnl, winRate, avgRR,
     positions, tradeHistory, marketFilter, setMarketFilter,
     executionMode, accountMode, settings,
-    tradesExecutedToday,
   } = useStore()
 
   const totalOpenPnl   = positions.reduce((s, p) => s + (p.pnl || 0), 0)

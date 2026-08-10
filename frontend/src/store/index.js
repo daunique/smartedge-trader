@@ -48,7 +48,6 @@ export const useStore = create(
       maxDrawdown:         0,
       sharpeRatio:         0,
       activeExchange:      'bybit',
-      tradesExecutedToday: 0,
 
       // Actions
       setExecutionMode:      (mode) => set({ executionMode: mode }),
@@ -61,7 +60,6 @@ export const useStore = create(
       setWsConnected:        (v)    => set({ wsConnected: v }),
       setActiveExchange:     (ex)   => set({ activeExchange: ex }),
       updateLivePrices:      (p)    => set({ livePrices: p }),
-      setTradesExecutedToday:(n)    => set({ tradesExecutedToday: n }),
 
       updateSettings: (updates) => set(state => ({
         settings: { ...DEFAULT_SETTINGS, ...state.settings, ...updates }
@@ -109,7 +107,6 @@ export const useStore = create(
           portfolioBalance:    data.balance       ?? get().portfolioBalance,
           dailyPnl:            data.daily_pnl     ?? get().dailyPnl,
           dailyPnlPct:         data.daily_pnl_pct ?? get().dailyPnlPct,
-          tradesExecutedToday: data.trades_today  ?? get().tradesExecutedToday,
           winRate,
           currentStreak: streak,
           weeklyPnl:     Math.round(weeklyPnl * 100) / 100,

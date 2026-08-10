@@ -39,6 +39,7 @@ independent settings.
 ```
 backend/app/
   main.py              FastAPI app, REST + WebSocket routes
+  bybit_client.py       shared signed-request client (used by both files below)
   engine/
     signal_engine.py   strategy: indicators, entry logic, signal generation
     auto_executor.py   position sizing, order placement, BE monitor, safety checks
@@ -97,3 +98,13 @@ at all) is the reliable version of this, not the free-tier ping.
 - Risk-per-trade is now per-symbol (XRP 6% / ETH 5%) instead of one flat
   number, and `minRR`/breakeven/daily-loss defaults now match what was
   actually backtested rather than a template placeholder.
+- Debugging pass: Bybit request-signing logic (was independently duplicated
+  in `main.py` and `auto_executor.py`) consolidated into `bybit_client.py`;
+  `/api/history`'s R:R was hardcoded to `"0"` on every trade, now computed
+  from each order's real entry/TP/SL; the daily-loss safety limit tracked a
+  counter that was never actually updated (always read as 0% loss, could
+  never trip) and now syncs from real closed-order P&L before every trade;
+  closing a position from the dashboard called Bybit's order-cancel endpoint
+  against an open position (wrong endpoint for that) with no UI button that
+  could even reach it -- now a real reduce-only close order, with a Close
+  button on each position.
