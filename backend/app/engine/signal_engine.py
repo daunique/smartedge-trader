@@ -44,6 +44,7 @@ class Signal:
     rr: str; status: str; timeframe: str; market: str
     trend: str; entry_trigger: str; vol_ok: bool
     atr: float; timestamp: str; expires_at: str
+    executed: bool = False
 
 # -- Market Data ------------------------------------------------------------
 async def fetch_candles(symbol: str, interval: str = "60", limit: int = 1000) -> list[dict]:
@@ -200,9 +201,34 @@ class SignalEngine:
     def set_broadcast(self, cb): self.broadcast_cb = cb
 
     def get_active(self):
+        # Non-executed signals go stale after an hour and should drop off --
+        # but a signal that WAS executed now represents an open position,
+        # not a pending opportunity, and has nothing to do with this timer.
+        # It's cleared separately, by clear_executed_if_closed, once the
+        # position it represents actually closes.
         now = datetime.now(timezone.utc).isoformat()
-        self.signals = [s for s in self.signals if s.expires_at > now]
+        self.signals = [s for s in self.signals if s.executed or s.expires_at > now]
         return [asdict(s) for s in self.signals]
+
+    def mark_executed(self, signal_id: str):
+        for s in self.signals:
+            if s.id == signal_id:
+                s.executed = True
+                return True
+        return False
+
+    def clear_executed_if_closed(self, open_symbols_raw: set):
+        """open_symbols_raw: symbols (no slash, e.g. 'XRPUSDT') with a
+        currently-open position, from auto_executor's own 30s position
+        poll. An executed signal whose symbol isn't in that set anymore
+        means the trade it represents has closed -- remove it."""
+        before = len(self.signals)
+        self.signals = [
+            s for s in self.signals
+            if not s.executed or s.symbol.replace("/", "") in open_symbols_raw
+        ]
+        if len(self.signals) != before:
+            print(f"[ENGINE] Cleared {before - len(self.signals)} executed signal(s) whose position closed")
 
     async def scan_all(self):
         print(f"[ENGINE] Scanning {len(ALL_SYMBOLS)} symbols (1H, 24/7 -- no session gating)")
@@ -215,7 +241,15 @@ class SignalEngine:
                 print(f"[ENGINE] scan error: {r}")
         new_signals = [r for r in results if isinstance(r, Signal)]
         existing    = {s.symbol for s in new_signals}
-        self.signals = [s for s in self.signals if s.symbol not in existing] + new_signals
+        # Don't replace an executed signal with a fresh-looking one for the
+        # same symbol -- that position is still open, there's nothing new
+        # to act on until it closes (see execute_signal's same-pair guard).
+        self.signals = [
+            s for s in self.signals
+            if s.symbol not in existing or s.executed
+        ] + [ns for ns in new_signals if not any(
+            s.symbol == ns.symbol and s.executed for s in self.signals
+        )]
         print(f"[ENGINE] {len(new_signals)} new signals | {len(self.signals)} total active")
 
         if self.broadcast_cb:

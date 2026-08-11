@@ -68,6 +68,19 @@ def get_order_pnl(o: dict) -> float:
     cum_fee = float(o.get("cumExecFee") or 0)
     return round(-cum_fee, 4)
 
+def is_closing_order(o: dict) -> bool:
+    """True only for the order that actually closed a position (TP/SL fill,
+    or an explicit reduce-only close) -- NOT the entry order that opened it.
+    Every entry order also appears in order history with closedPnl==0 (opening
+    a position realizes no P&L), which made get_order_pnl's fee-only fallback
+    treat every single entry as its own small phantom loss -- inflating trade
+    counts, corrupting daily P&L (can flip its sign on a day with few trades),
+    and breaking streak counts (a real win/win/win reads as loss/win/loss/win/
+    loss/win once each entry order interleaves a fake 'SL' between the real
+    results). reduceOnly is set correctly on our own closing orders (see
+    close_position, _verify_and_protect) and Bybit echoes it back in history."""
+    return bool(o.get("reduceOnly"))
+
 def get_order_rr(o: dict) -> float:
     """Actual R:R achieved on a filled order, from its own fill/TP/SL prices
     -- not assumed from strategy defaults, so it stays correct even if the

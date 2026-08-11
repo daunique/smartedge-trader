@@ -14,7 +14,7 @@ from app.engine.signal_engine import signal_engine
 from app.engine.auto_executor import auto_executor
 from app.bybit_client import (
     DEMO_BASE, get_api_key, bybit_get, bybit_post,
-    get_order_pnl, get_order_rr, ts_to_iso, is_today_utc,
+    get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc,
 )
 from dataclasses import asdict
 
@@ -38,27 +38,31 @@ manager = ConnectionManager()
 # ── Full-Auto watcher ─────────────────────────────────────────────
 async def full_auto_watcher():
     print("[AUTO] Full-auto watcher started")
-    last_signal_count = 0
     while True:
         try:
             if auto_executor.mode == "FULL-AUTO" and not auto_executor.paused:
-                signals   = signal_engine.get_active()
-                new_count = len(signals)
-                if new_count != last_signal_count:
-                    last_signal_count = new_count
-                    for sig in signals:
-                        if auto_executor.trades_today >= auto_executor.settings.get("maxTradesPerDay", 3):
-                            print(f"[AUTO] Daily limit hit ({auto_executor.trades_today}) — stopping")
-                            break
-                        if sig.get("status") == "ACTIVE" and sig.get("id") not in auto_executor.executed_ids:
-                            print(f"[AUTO] Executing: {sig['symbol']} {sig['direction']}")
-                            result = await auto_executor.execute_signal(sig)
-                            if result.get("success"):
-                                await manager.broadcast({
-                                    "type": "auto_executed",
-                                    "result": result,
-                                    "timestamp": datetime.utcnow().isoformat(),
-                                })
+                # Previously only entered this block when len(signals) had
+                # changed since the last pass -- with 2 symbols mostly
+                # producing 0-2 signals that replace rather than accumulate,
+                # the count rarely changes between 30s checks, so this
+                # almost never re-examined whether anything unexecuted was
+                # sitting there. Check every pass instead; executed_ids
+                # already prevents re-executing the same signal twice.
+                signals = signal_engine.get_active()
+                for sig in signals:
+                    if auto_executor.trades_today >= auto_executor.settings.get("maxTradesPerDay", 3):
+                        print(f"[AUTO] Daily limit hit ({auto_executor.trades_today}) — stopping")
+                        break
+                    if sig.get("status") == "ACTIVE" and sig.get("id") not in auto_executor.executed_ids:
+                        print(f"[AUTO] Executing: {sig['symbol']} {sig['direction']}")
+                        result = await auto_executor.execute_signal(sig)
+                        if result.get("success"):
+                            signal_engine.mark_executed(sig["id"])
+                            await manager.broadcast({
+                                "type": "auto_executed",
+                                "result": result,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
         except Exception as e:
             print(f"[AUTO] Error: {e}")
         await asyncio.sleep(30)
@@ -164,7 +168,7 @@ async def get_portfolio():
         if orders_data.get("retCode") == 0:
             for o in orders_data["result"].get("list", []):
                 created = o.get("createdTime") or "0"
-                if is_today_utc(created) and o.get("orderStatus") in ("Filled", "PartiallyFilled"):
+                if is_today_utc(created) and o.get("orderStatus") in ("Filled", "PartiallyFilled") and is_closing_order(o):
                     trades_today_count += 1
                     daily_pnl += get_order_pnl(o)
 
@@ -253,6 +257,8 @@ async def get_history(limit: int = 100, offset: int = 0):
         for o in orders:
             if o.get("orderStatus") not in ("Filled", "PartiallyFilled"):
                 continue
+            if not is_closing_order(o):
+                continue  # entry order, not a completed trade -- see is_closing_order
             pnl      = get_order_pnl(o)
             running += pnl
             created  = o.get("createdTime") or o.get("updatedTime") or "0"
@@ -317,7 +323,10 @@ async def execute_signal(signal_id: str):
     sig = next((s for s in signal_engine.signals if s.id == signal_id), None)
     if not sig:
         return {"success": False, "error": "Signal not found"}
-    return await auto_executor.execute_signal(asdict(sig))
+    result = await auto_executor.execute_signal(asdict(sig))
+    if result.get("success"):
+        signal_engine.mark_executed(signal_id)
+    return result
 
 @app.post("/api/positions/{position_id}/close")
 async def close_position(position_id: str, reason: str = "manual"):

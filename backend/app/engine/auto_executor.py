@@ -7,8 +7,10 @@ import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
-from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_today_utc
-from app.engine.signal_engine import fetch_candles, wilder_atr_series, SL_ATR_MULT, ATR_PERIOD
+from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_closing_order, is_today_utc
+from app.engine.signal_engine import (
+    fetch_candles, wilder_atr_series, SL_ATR_MULT, ATR_PERIOD, signal_engine,
+)
 
 # ── Position sizing ───────────────────────────────────────────────
 MAX_LEVERAGE = {"XRPUSDT": 15.0, "ETHUSDT": 20.0}  # matches the backtest's safety ceiling
@@ -182,6 +184,24 @@ class AutoExecutor:
         if rr < self.settings["minRR"] - RR_EPSILON:
             return {"success": False, "reason": f"RR too low ({rr:.2f} < {self.settings['minRR']})"}
 
+        # Same-pair guard, matching the backtest exactly: entries were only
+        # ever considered while flat (`if position == 0` in backtest.py) --
+        # a new signal for a pair that already has an open trade was never
+        # acted on, the existing trade just ran to its own SL/TP/BE. This
+        # was missing entirely from the live path (verified by grep before
+        # writing this) -- nothing stopped a second order, manual or auto,
+        # from stacking onto or flipping an already-open position.
+        pos_check = await bybit_get("/v5/position/list",
+                                    {"category": "linear", "symbol": symbol_raw, "settleCoin": "USDT"})
+        if pos_check.get("retCode") == 0:
+            existing = next((p for p in pos_check["result"].get("list", [])
+                             if float(p.get("size") or 0) > 0), None)
+            if existing:
+                return {"success": False,
+                        "reason": f"{symbol_raw} already has an open position -- "
+                                  f"matching backtest behavior, new signals for a pair "
+                                  f"aren't acted on until the current trade closes"}
+
         # Position size -- risk % is per-symbol (XRP 6% / ETH 5%), not a flat number.
         # Defensive against riskPerTrade being a stale flat number (shouldn't happen
         # post-update_settings-fix, but a currently-running instance may still be
@@ -217,9 +237,11 @@ class AutoExecutor:
         # time; safe to call even when already at that value.
         await self._ensure_leverage(symbol_raw, MAX_LEVERAGE.get(symbol_raw, 10.0))
 
-        # Place order. tpOrderType/slOrderType added explicitly per Bybit's
-        # own documented example (docs show these set even for market-
-        # triggered TP/SL) rather than relying on an undocumented default.
+        # Place order. Bybit's actual error on the last deploy was explicit:
+        # "tpOrderType can not have a value when tpSlMode is empty" -- so
+        # tpOrderType/slOrderType require tpslMode to be set, which was the
+        # missing piece, not a guess this time. "Full" = TP/SL applies to
+        # the whole position (we never split TP/SL across partial size).
         body = {
             "category":    "linear",
             "symbol":      symbol_raw,
@@ -230,6 +252,7 @@ class AutoExecutor:
             "stopLoss":    str(round(sl, 6)),
             "tpTriggerBy": "MarkPrice",
             "slTriggerBy": "MarkPrice",
+            "tpslMode":    "Full",
             "tpOrderType": "Market",
             "slOrderType": "Market",
             "timeInForce": "IOC",
@@ -414,28 +437,35 @@ class AutoExecutor:
         return False
 
     async def run_be_monitor(self):
-        """Background loop — checks BE trigger on all open positions every 30s"""
+        """Background loop — checks BE trigger and SL presence on all open
+        positions every 30s. Runs unconditionally regardless of mode/pause:
+        those govern whether NEW trades get taken, not whether an already-
+        open position stays protected. Gating this on mode meant switching
+        to MANUAL or hitting pause would have silently stopped BE-monitoring
+        and the SL self-heal both, for any position still open at the time."""
         self.running = True
         print("[EXECUTOR] BE monitor started")
         while self.running:
             try:
-                if not self.paused and self.mode in ("SEMI-AUTO", "FULL-AUTO"):
-                    data = await bybit_get("/v5/position/list",
-                                          {"category": "linear", "settleCoin": "USDT"})
-                    if data.get("retCode") == 0:
-                        for p in data["result"].get("list", []):
-                            size = float(p.get("size") or 0)
-                            if size == 0: continue
-                            pos = {
-                                "symbol":    p.get("symbol"),
-                                "direction": "LONG" if p.get("side") == "Buy" else "SHORT",
-                                "entry":     float(p.get("avgPrice")  or 0),
-                                "current":   float(p.get("markPrice") or 0),
-                                "sl":        float(p.get("stopLoss")  or 0),
-                            }
-                            if pos["sl"] == 0:
-                                pos["sl"] = await self._ensure_position_protected(pos)
-                            await self.update_break_even(pos)
+                data = await bybit_get("/v5/position/list",
+                                      {"category": "linear", "settleCoin": "USDT"})
+                if data.get("retCode") == 0:
+                    open_symbols = set()
+                    for p in data["result"].get("list", []):
+                        size = float(p.get("size") or 0)
+                        if size == 0: continue
+                        open_symbols.add(p.get("symbol"))
+                        pos = {
+                            "symbol":    p.get("symbol"),
+                            "direction": "LONG" if p.get("side") == "Buy" else "SHORT",
+                            "entry":     float(p.get("avgPrice")  or 0),
+                            "current":   float(p.get("markPrice") or 0),
+                            "sl":        float(p.get("stopLoss")  or 0),
+                        }
+                        if pos["sl"] == 0:
+                            pos["sl"] = await self._ensure_position_protected(pos)
+                        await self.update_break_even(pos)
+                    signal_engine.clear_executed_if_closed(open_symbols)
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
             await asyncio.sleep(30)
@@ -466,6 +496,8 @@ class AutoExecutor:
                     continue
                 if o.get("orderStatus") not in ("Filled", "PartiallyFilled"):
                     continue
+                if not is_closing_order(o):
+                    continue  # entry order, not a completed trade -- see is_closing_order
                 trades_today += 1
                 pnl = get_order_pnl(o)
                 if pnl < 0:

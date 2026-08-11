@@ -85,38 +85,30 @@ at all) is the reliable version of this, not the free-tier ping.
 - Strategy replaced end-to-end (was VWAP + Opening Range Breakout on 15m
   candles with London/NY session gating — now SMA-cross + candle-structure
   on 1H candles, 24/7, per the table above).
-- ML confidence filter removed (backend scoring function, frontend
-  confidence displays and threshold controls, `scikit-learn`/`xgboost` deps).
-  It was a hand-weighted heuristic, not a trained model, and wasn't part of
-  what was backtested.
-- Removed two files that were never actually imported anywhere:
-  `engine/trade_manager.py` and `exchange/bybit.py` (an unused `ccxt`
-  connector — live execution goes through direct signed REST calls instead).
-- `requirements.txt` trimmed to what's actually imported (was carrying
-  unused `redis`, `sqlalchemy`, `alembic`, `asyncpg`, `python-jose`,
-  `passlib`, `schedule`, `pandas`, `pydantic-settings`).
-- Risk-per-trade is now per-symbol (XRP 6% / ETH 5%) instead of one flat
-  number, and `minRR`/breakeven/daily-loss defaults now match what was
-  actually backtested rather than a template placeholder.
-- Debugging pass: Bybit request-signing logic (was independently duplicated
-  in `main.py` and `auto_executor.py`) consolidated into `bybit_client.py`;
-  `/api/history`'s R:R was hardcoded to `"0"` on every trade, now computed
-  from each order's real entry/TP/SL; the daily-loss safety limit tracked a
-  counter that was never actually updated (always read as 0% loss, could
-  never trip) and now syncs from real closed-order P&L before every trade;
-  closing a position from the dashboard called Bybit's order-cancel endpoint
-  against an open position (wrong endpoint for that) with no UI button that
-  could even reach it -- now a real reduce-only close order, with a Close
-  button on each position; orders were also being sized assuming leverage
-  the exchange account was never actually configured to allow (Bybit
-  leverage is a persistent per-symbol account setting, not a per-order
-  param), causing "insufficient margin" rejections on otherwise-correctly-
-  sized trades -- leverage is now set explicitly before every order; and
-  most seriously, a position could end up open with no stop-loss attached
-  at all (cause not fully certain even after checking Bybit's own docs, so
-  treated as a "must not trust it silently worked" problem, not a one-
-  parameter fix) -- entry now verifies the SL actually landed and sets it
-  explicitly if not, and the BE monitor checks every open position for a
-  missing SL on every 30s pass (not just at entry) and sets an emergency
-  ATR-based stop immediately if one is ever found naked, regardless of how
-  it got that way.
+- ML confidence filter removed entirely (backend scoring function, frontend
+  displays/controls, `scikit-learn`/`xgboost` deps) — it was a hand-weighted
+  heuristic, not a trained model, and wasn't part of what was backtested.
+- Removed dead code never actually imported anywhere (`trade_manager.py`,
+  `exchange/bybit.py`) and trimmed `requirements.txt` to what's really used.
+- Risk-per-trade is per-symbol (XRP 6% / ETH 5%) with leverage set
+  explicitly on the exchange to match, not left at whatever Bybit defaulted
+  to; `minRR`/breakeven/daily-loss defaults match what was backtested.
+- Bybit request-signing, previously duplicated independently in two files,
+  consolidated into one shared `bybit_client.py`.
+
+**Debugging pass fixes** (each verified against mocked Bybit responses, not
+just read for correctness — see `bybit_client.py`/`auto_executor.py`
+comments for the specifics of each):
+- Position close, R:R history, and daily-loss tracking were each either
+  computing wrong values or not wired up to real data at all.
+- `full_auto_watcher` had a broken trigger condition that made it almost
+  never fire; there was no protection anywhere against opening a second
+  position on a pair that already had one open, unlike the backtest.
+- Signals hard-expired 1 hour after firing regardless of execution state,
+  so a trade running longer than an hour lost its own signal card.
+- A position could end up open with no stop-loss at all; entry now
+  verifies SL attached and the BE monitor self-heals any naked position
+  found on any 30s pass, not just at entry.
+- Every entry order was being counted as its own phantom loss (an entry's
+  `closedPnl` is always 0), corrupting daily P&L and win/loss streaks —
+  now filtered to closing orders only.
