@@ -112,3 +112,9 @@ comments for the specifics of each):
 - Every entry order was being counted as its own phantom loss (an entry's
   `closedPnl` is always 0), corrupting daily P&L and win/loss streaks —
   now filtered to closing orders only.
+- BE-trigger checks used only the instantaneous price at each 30s poll, so
+  a spike that touched the trigger and pulled back before the next poll
+  landed was never detected — now tracks a per-position high-water mark;
+  breakeven also moves to a small buffer past entry now, not exactly
+  entry, matching the backtest (avoids a "breakeven" exit still net-losing
+  to fees).

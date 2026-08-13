@@ -111,6 +111,13 @@ class AutoExecutor:
         self.executed_ids  = set()   # prevent double execution
         self.broadcast_cb  = None
         self.running       = False
+        # Best price seen in the position's favor since it opened, per
+        # symbol -- update_break_even was checking only the instantaneous
+        # markPrice at each 30s poll, so a price spike that touched the BE
+        # trigger and pulled back before the next poll landed was simply
+        # never detected. This high-water mark catches it even if price
+        # has already pulled back by the time the next poll runs.
+        self.peak_favorable = {}
 
     def set_broadcast(self, cb): self.broadcast_cb = cb
     def set_mode(self, mode):    self.mode = mode
@@ -402,10 +409,15 @@ class AutoExecutor:
             return 0.0
 
     async def update_break_even(self, position: dict) -> bool:
-        """Move SL to entry when BE trigger is hit"""
+        """Move SL to entry (+small buffer) when BE trigger is hit. `position`
+        may carry a 'peak' field (best price seen since open, tracked by the
+        caller) -- if present, the trigger check uses that instead of the
+        instantaneous current price, so a price spike that already touched
+        the trigger still counts even if price has since pulled back."""
         symbol_raw = position["symbol"].replace("/", "")
         entry      = float(position.get("entry", 0))
         current    = float(position.get("current", 0))
+        peak       = float(position.get("peak", current))
         sl         = float(position.get("sl", 0))
         direction  = position.get("direction")
         be_trigger = self.settings.get("beTrigger", 1.0)
@@ -417,17 +429,22 @@ class AutoExecutor:
         if risk == 0: return False
 
         rr_achieved = (
-            (current - entry) / risk if direction == "LONG"
-            else (entry - current) / risk
+            (peak - entry) / risk if direction == "LONG"
+            else (entry - peak) / risk
         )
 
         if rr_achieved >= be_trigger and sl != entry:
-            print(f"[EXECUTOR] Moving SL to BE for {symbol_raw}")
+            # Small buffer beyond exact entry, matching the backtest
+            # (be_buffer in backtest.py) -- without it, a "breakeven" exit
+            # still nets a small loss once fees are accounted for.
+            BE_BUFFER = 0.0006
+            be_price = entry * (1 + BE_BUFFER) if direction == "LONG" else entry * (1 - BE_BUFFER)
+            print(f"[EXECUTOR] Moving SL to BE for {symbol_raw} (peak rr={rr_achieved:.2f} >= {be_trigger})")
             try:
                 result = await bybit_post("/v5/position/trading-stop", {
                     "category":  "linear",
                     "symbol":    symbol_raw,
-                    "stopLoss":  str(entry),
+                    "stopLoss":  str(round(be_price, 6)),
                     "slTriggerBy": "MarkPrice",
                     "positionIdx": 0,
                 })
@@ -454,18 +471,35 @@ class AutoExecutor:
                     for p in data["result"].get("list", []):
                         size = float(p.get("size") or 0)
                         if size == 0: continue
-                        open_symbols.add(p.get("symbol"))
+                        symbol = p.get("symbol")
+                        open_symbols.add(symbol)
+                        direction = "LONG" if p.get("side") == "Buy" else "SHORT"
+                        current   = float(p.get("markPrice") or 0)
+
+                        prev_peak = self.peak_favorable.get(symbol)
+                        peak = current if prev_peak is None else (
+                            max(prev_peak, current) if direction == "LONG" else min(prev_peak, current)
+                        )
+                        self.peak_favorable[symbol] = peak
+
                         pos = {
-                            "symbol":    p.get("symbol"),
-                            "direction": "LONG" if p.get("side") == "Buy" else "SHORT",
+                            "symbol":    symbol,
+                            "direction": direction,
                             "entry":     float(p.get("avgPrice")  or 0),
-                            "current":   float(p.get("markPrice") or 0),
+                            "current":   current,
+                            "peak":      peak,
                             "sl":        float(p.get("stopLoss")  or 0),
                         }
                         if pos["sl"] == 0:
                             pos["sl"] = await self._ensure_position_protected(pos)
                         await self.update_break_even(pos)
                     signal_engine.clear_executed_if_closed(open_symbols)
+                    # Drop peak tracking for anything no longer open, so the
+                    # next trade on that symbol starts with a clean slate
+                    # instead of inheriting a stale high-water mark.
+                    for sym in list(self.peak_favorable):
+                        if sym not in open_symbols:
+                            del self.peak_favorable[sym]
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
             await asyncio.sleep(30)
