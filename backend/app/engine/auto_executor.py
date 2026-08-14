@@ -113,7 +113,7 @@ class AutoExecutor:
         self.running       = False
         # Best price seen in the position's favor since it opened, per
         # symbol -- update_break_even was checking only the instantaneous
-        # markPrice at each 30s poll, so a price spike that touched the BE
+        # markPrice at each 10s poll, so a price spike that touched the BE
         # trigger and pulled back before the next poll landed was simply
         # never detected. This high-water mark catches it even if price
         # has already pulled back by the time the next poll runs.
@@ -340,7 +340,7 @@ class AutoExecutor:
     async def _verify_and_protect(self, symbol_raw: str, intended_sl: float, intended_tp: float):
         """Confirm SL actually landed on the position after order creation;
         if not, set it explicitly rather than leave the position naked
-        until the next 30s monitor pass. This is what should have caught
+        until the next 10s monitor pass. This is what should have caught
         the case where an open position had no SL at all."""
         try:
             data = await bybit_get("/v5/position/list",
@@ -355,7 +355,8 @@ class AutoExecutor:
             current_sl = float(pos.get("stopLoss") or 0)
             if current_sl > 0:
                 return  # attached correctly, nothing to do
-            print(f"[EXECUTOR] ⚠ {symbol_raw} opened with no SL attached -- setting it now")
+            pos_idx = int(pos.get("positionIdx", 0))  # read the real value -- hardcoding 0 assumes one-way mode, which silently fails every call if the account is actually in hedge mode
+            print(f"[EXECUTOR] ⚠ {symbol_raw} opened with no SL attached -- setting it now (positionIdx={pos_idx})")
             result = await bybit_post("/v5/position/trading-stop", {
                 "category":    "linear",
                 "symbol":      symbol_raw,
@@ -363,17 +364,18 @@ class AutoExecutor:
                 "takeProfit":  str(round(intended_tp, 6)),
                 "slTriggerBy": "MarkPrice",
                 "tpTriggerBy": "MarkPrice",
-                "positionIdx": 0,
+                "positionIdx": pos_idx,
             })
             if result.get("retCode") == 0:
                 print(f"[EXECUTOR] SL set as fallback for {symbol_raw}: {intended_sl}")
             else:
-                print(f"[EXECUTOR] ❌ Fallback SL-set FAILED for {symbol_raw}: {result.get('retMsg')} -- still unprotected")
+                print(f"[EXECUTOR] ❌ Fallback SL-set FAILED for {symbol_raw}: "
+                      f"retCode={result.get('retCode')} retMsg={result.get('retMsg')} -- still unprotected")
         except Exception as e:
             print(f"[EXECUTOR] SL verification error for {symbol_raw}: {e}")
 
     async def _ensure_position_protected(self, pos: dict) -> float:
-        """Called from the monitor loop on every open position, every 30s --
+        """Called from the monitor loop on every open position, every 10s --
         not just at entry. Catches a naked (no-SL) position regardless of
         how it got that way (a failed entry-time attach that verification
         also missed, a manual exchange-side change, anything), using a
@@ -383,6 +385,7 @@ class AutoExecutor:
         if pos["sl"] > 0:
             return pos["sl"]
         symbol_raw = pos["symbol"]
+        pos_idx = pos.get("positionIdx", 0)
         print(f"[EXECUTOR] ⚠ {symbol_raw} has an OPEN position with NO stop-loss -- protecting it now")
         try:
             candles = await fetch_candles(symbol_raw, interval="60", limit=100)
@@ -397,12 +400,13 @@ class AutoExecutor:
             result = await bybit_post("/v5/position/trading-stop", {
                 "category": "linear", "symbol": symbol_raw,
                 "stopLoss": str(round(sl, 6)), "slTriggerBy": "MarkPrice",
-                "positionIdx": 0,
+                "positionIdx": pos_idx,
             })
             if result.get("retCode") == 0:
                 print(f"[EXECUTOR] Emergency SL set for {symbol_raw}: {sl}")
                 return sl
-            print(f"[EXECUTOR] ❌ Emergency SL set FAILED for {symbol_raw}: {result.get('retMsg')}")
+            print(f"[EXECUTOR] ❌ Emergency SL set FAILED for {symbol_raw}: "
+                  f"retCode={result.get('retCode')} retMsg={result.get('retMsg')}")
             return 0.0
         except Exception as e:
             print(f"[EXECUTOR] Emergency SL error for {symbol_raw}: {e}")
@@ -439,23 +443,44 @@ class AutoExecutor:
             # still nets a small loss once fees are accounted for.
             BE_BUFFER = 0.0006
             be_price = entry * (1 + BE_BUFFER) if direction == "LONG" else entry * (1 - BE_BUFFER)
-            print(f"[EXECUTOR] Moving SL to BE for {symbol_raw} (peak rr={rr_achieved:.2f} >= {be_trigger})")
+            pos_idx = position.get("positionIdx", 0)
+            print(f"[EXECUTOR] Moving SL to BE for {symbol_raw} (peak rr={rr_achieved:.2f} >= {be_trigger}, positionIdx={pos_idx})")
             try:
                 result = await bybit_post("/v5/position/trading-stop", {
                     "category":  "linear",
                     "symbol":    symbol_raw,
                     "stopLoss":  str(round(be_price, 6)),
                     "slTriggerBy": "MarkPrice",
-                    "positionIdx": 0,
+                    "positionIdx": pos_idx,
                 })
-                return result.get("retCode") == 0
-            except:
+                if result.get("retCode") != 0:
+                    print(f"[EXECUTOR] ❌ BE move FAILED for {symbol_raw}: "
+                          f"retCode={result.get('retCode')} retMsg={result.get('retMsg')} "
+                          f"-- SL still at {sl}, will retry next 10s pass")
+                    return False
+                # Verify it actually landed rather than trust a retCode==0
+                # response alone -- confirm the position's stopLoss field
+                # actually changed before calling this done.
+                check = await bybit_get("/v5/position/list",
+                                        {"category": "linear", "symbol": symbol_raw, "settleCoin": "USDT"})
+                new_sl = 0.0
+                if check.get("retCode") == 0:
+                    p = next((p for p in check["result"].get("list", []) if float(p.get("size") or 0) > 0), None)
+                    if p: new_sl = float(p.get("stopLoss") or 0)
+                if abs(new_sl - be_price) < be_price * 0.001:  # matches within tick-size rounding
+                    print(f"[EXECUTOR] ✅ BE confirmed for {symbol_raw}: SL now {new_sl} (was {sl})")
+                    return True
+                print(f"[EXECUTOR] ⚠ BE move returned success for {symbol_raw} but SL reads "
+                      f"{new_sl}, expected ~{be_price} -- treating as unconfirmed, will retry")
+                return False
+            except Exception as e:
+                print(f"[EXECUTOR] ❌ BE move exception for {symbol_raw}: {e} -- will retry next 10s pass")
                 return False
         return False
 
     async def run_be_monitor(self):
         """Background loop — checks BE trigger and SL presence on all open
-        positions every 30s. Runs unconditionally regardless of mode/pause:
+        positions every 10s. Runs unconditionally regardless of mode/pause:
         those govern whether NEW trades get taken, not whether an already-
         open position stays protected. Gating this on mode meant switching
         to MANUAL or hitting pause would have silently stopped BE-monitoring
@@ -483,12 +508,17 @@ class AutoExecutor:
                         self.peak_favorable[symbol] = peak
 
                         pos = {
-                            "symbol":    symbol,
-                            "direction": direction,
-                            "entry":     float(p.get("avgPrice")  or 0),
-                            "current":   current,
-                            "peak":      peak,
-                            "sl":        float(p.get("stopLoss")  or 0),
+                            "symbol":      symbol,
+                            "direction":   direction,
+                            "entry":       float(p.get("avgPrice")  or 0),
+                            "current":     current,
+                            "peak":        peak,
+                            "sl":          float(p.get("stopLoss")  or 0),
+                            # Real value from Bybit, not assumed -- 0 only
+                            # holds for one-way mode; hedge mode uses 1/2,
+                            # and every trading-stop call silently fails if
+                            # this doesn't match the account's actual mode.
+                            "positionIdx": int(p.get("positionIdx", 0)),
                         }
                         if pos["sl"] == 0:
                             pos["sl"] = await self._ensure_position_protected(pos)
@@ -502,7 +532,16 @@ class AutoExecutor:
                             del self.peak_favorable[sym]
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
-            await asyncio.sleep(30)
+            # 10s, down from 30s -- this loop only fetches one lightweight
+            # position-list call (and, rarely, a trading-stop call) for
+            # what's normally 0-2 open positions, so tightening this is
+            # cheap and doesn't meaningfully touch Bybit's rate limits at
+            # this trade frequency. Real-time WebSocket-based monitoring
+            # would remove polling latency entirely, but that's a separate,
+            # larger change (different auth model, persistent connection,
+            # reconnect handling) worth its own careful pass rather than
+            # folding into this fix.
+            await asyncio.sleep(10)
 
     def stop(self): self.running = False
 

@@ -108,13 +108,21 @@ comments for the specifics of each):
   so a trade running longer than an hour lost its own signal card.
 - A position could end up open with no stop-loss at all; entry now
   verifies SL attached and the BE monitor self-heals any naked position
-  found on any 30s pass, not just at entry.
+  found on any 10s pass, not just at entry.
 - Every entry order was being counted as its own phantom loss (an entry's
   `closedPnl` is always 0), corrupting daily P&L and win/loss streaks —
   now filtered to closing orders only.
-- BE-trigger checks used only the instantaneous price at each 30s poll, so
+- BE-trigger checks used only the instantaneous price at each poll, so
   a spike that touched the trigger and pulled back before the next poll
   landed was never detected — now tracks a per-position high-water mark;
   breakeven also moves to a small buffer past entry now, not exactly
   entry, matching the backtest (avoids a "breakeven" exit still net-losing
   to fees).
+- The actual cause of BE never firing: every call that modifies a position
+  (BE move, emergency SL) hardcoded `positionIdx: 0`, which only holds in
+  one-way mode — wrong in hedge mode, and every such call would fail
+  silently (`except: return False`, no logging). Now reads the real
+  positionIdx from the position itself, logs Bybit's actual retCode/retMsg
+  on any failure, and verifies the SL actually changed after a BE move
+  instead of trusting a success response alone. BE-monitor interval also
+  tightened from 30s to 10s.
