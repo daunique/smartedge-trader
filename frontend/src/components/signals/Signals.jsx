@@ -1,185 +1,156 @@
 import React, { useState } from 'react'
-import { Activity, Play, Loader, CheckCircle, XCircle } from 'lucide-react'
+import { Radio, ArrowUpRight, ArrowDownRight, Zap, Check, X } from 'lucide-react'
 import { useStore } from '../../store'
 import { api } from '../../services/api'
-import SignalModal from '../shared/SignalModal'
 import clsx from 'clsx'
+import { formatDistanceToNow } from 'date-fns'
 
 function SignalCard({ signal }) {
-  const { executionMode } = useStore()
-  const [executing, setExecuting]   = useState(false)
-  const [execResult, setExecResult] = useState(null)
-  const [execMsg, setExecMsg]       = useState('')
-  const [modalOpen, setModalOpen]   = useState(false)
+  const { executionMode, dismissSignal, refreshSignals } = useStore()
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
   const isLong = signal.direction === 'LONG'
+  const executed = signal.executed
 
-  const statusConfig = {
-    ACTIVE:  { color: 'text-accent-green',  bg: 'bg-accent-green/10 border-accent-green/20',  label: '● ACTIVE' },
-    PENDING: { color: 'text-accent-yellow', bg: 'bg-accent-yellow/10 border-accent-yellow/20', label: '◐ PENDING' },
-    WATCH:   { color: 'text-text-secondary', bg: 'bg-bg-border/40 border-bg-border',            label: '○ WATCH' },
-  }
-  const cfg = statusConfig[signal.status] || statusConfig.WATCH
-
-  const handleExecute = async (e) => {
-    e?.stopPropagation()
-    if (executing || execResult) return
-    setExecuting(true)
-    try {
-      const result = await api.executeSignal(signal.id)
-      if (result?.success) {
-        setExecResult('success')
-        setExecMsg(`Order placed — ${result.qty} ${signal.symbol}`)
-      } else {
-        setExecResult('error')
-        setExecMsg(result?.reason || result?.error || 'Execution failed')
-      }
-    } catch {
-      setExecResult('error')
-      setExecMsg('Network error')
-    } finally {
-      setExecuting(false)
-      setTimeout(() => { setExecResult(null); setExecMsg('') }, 5000)
+  const execute = async () => {
+    setBusy(true)
+    setMsg(null)
+    const result = await api.executeSignal(signal.id)
+    setBusy(false)
+    if (result?.success) {
+      setMsg(`Filled · qty ${result.qty}`)
+      const signals = await api.getSignals()
+      if (signals?.signals) refreshSignals(signals.signals)
+    } else {
+      setMsg(result?.reason || result?.error || 'Failed')
     }
   }
 
+  const age = signal.timestamp
+    ? formatDistanceToNow(new Date(signal.timestamp), { addSuffix: true })
+    : '—'
+
   return (
-    <>
-      <div onClick={() => setModalOpen(true)} className={clsx(
-        'card p-4 flex flex-col gap-3 cursor-pointer hover:border-accent-cyan/20 transition-all duration-300 animate-slide-up',
-        signal.status === 'ACTIVE' && 'border-accent-green/20',
-      )}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-display text-sm font-bold text-text-primary">{signal.symbol}</span>
-            <span className={clsx('text-xs font-body font-semibold', isLong ? 'badge-long' : 'badge-short')}>{signal.direction}</span>
-          </div>
-          <span className={clsx('font-body text-xs border px-2 py-0.5 rounded', cfg.bg, cfg.color)}>{cfg.label}</span>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          <div className="bg-bg-elevated rounded-lg p-2">
-            <div className="font-body text-xs text-text-muted mb-1">ENTRY</div>
-            <div className="font-display text-xs font-bold text-text-primary">{Number(signal.entry).toFixed(4)}</div>
-          </div>
-          <div className="bg-accent-green/5 border border-accent-green/10 rounded-lg p-2">
-            <div className="font-body text-xs text-accent-green/60 mb-1">TP</div>
-            <div className="font-display text-xs font-bold text-accent-green">{Number(signal.tp).toFixed(4)}</div>
-          </div>
-          <div className="bg-accent-red/5 border border-accent-red/10 rounded-lg p-2">
-            <div className="font-body text-xs text-accent-red/60 mb-1">SL</div>
-            <div className="font-display text-xs font-bold text-accent-red">{Number(signal.sl).toFixed(4)}</div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex-1 font-body text-xs text-text-muted truncate" title={signal.entryTrigger}>
-            {signal.entryTrigger || 'entry trigger'}
-          </div>
-          <div className="text-right">
-            <div className="font-body text-xs text-text-muted">RR</div>
-            <div className="font-display text-xs font-bold text-accent-cyan">{signal.rr}</div>
-          </div>
-        </div>
-
-        <div className="flex gap-2 flex-wrap">
-          <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-            signal.trend === 'BULL' ? 'bg-accent-green/5 border-accent-green/20 text-accent-green/80' : 'bg-accent-red/5 border-accent-red/20 text-accent-red/80'
-          )}>Trend {signal.trend === 'BULL' ? '▲' : '▼'}</span>
-          <span className={clsx('font-body text-xs px-2 py-0.5 rounded border',
-            signal.volOk !== false ? 'bg-accent-cyan/5 border-accent-cyan/20 text-accent-cyan/80' : 'bg-bg-border/40 border-bg-border text-text-muted'
-          )}>Vol OK {signal.volOk !== false ? '✓' : '—'}</span>
-        </div>
-
-        {execResult && (
-          <div className={clsx('flex items-center gap-2 px-3 py-2 rounded-lg border font-body text-xs',
-            execResult === 'success' ? 'bg-accent-green/10 border-accent-green/30 text-accent-green' : 'bg-accent-red/10 border-accent-red/30 text-accent-red'
+    <div className={clsx(
+      'card p-4 transition-all',
+      executed ? 'opacity-70' : 'card-glow'
+    )}>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2.5">
+          <div className={clsx(
+            'w-10 h-10 rounded-xl flex items-center justify-center border',
+            isLong ? 'bg-accent-green/10 border-accent-green/30' : 'bg-accent-red/10 border-accent-red/30'
           )}>
-            {execResult === 'success' ? <CheckCircle size={13} /> : <XCircle size={13} />}
-            {execMsg}
+            {isLong
+              ? <ArrowUpRight size={18} className="text-accent-green" />
+              : <ArrowDownRight size={18} className="text-accent-red" />}
           </div>
-        )}
-
-        {executionMode === 'SEMI-AUTO' && !execResult && (
-          <button onClick={handleExecute} disabled={executing}
-            className={clsx('w-full flex items-center justify-center gap-2 py-2 rounded-lg border font-body text-sm font-semibold transition-all',
-              executing ? 'bg-bg-elevated border-bg-border text-text-muted cursor-not-allowed'
-              : isLong ? 'bg-accent-green/10 border-accent-green/30 text-accent-green hover:bg-accent-green/20'
-              : 'bg-accent-red/10 border-accent-red/30 text-accent-red hover:bg-accent-red/20'
-            )}>
-            {executing ? <><Loader size={13} className="animate-spin" />Placing...</> : <><Play size={13} />Execute {signal.direction}</>}
-          </button>
-        )}
-        {executionMode === 'FULL-AUTO' && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-green/5 border border-accent-green/20 rounded-lg">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />
-            <span className="font-body text-xs text-accent-green">Auto-executing when ACTIVE</span>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-display text-sm font-bold">{signal.symbol}</span>
+              <span className={isLong ? 'badge-long' : 'badge-short'}>{signal.direction}</span>
+            </div>
+            <div className="text-[11px] text-text-muted mt-0.5">{age} · {signal.timeframe || '1H'}</div>
           </div>
+        </div>
+        {executed ? (
+          <span className="text-[10px] font-semibold px-2 py-1 rounded-md bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25">
+            EXECUTED
+          </span>
+        ) : (
+          <span className="text-[10px] font-semibold px-2 py-1 rounded-md bg-accent-green/10 text-accent-green border border-accent-green/25 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" /> LIVE
+          </span>
         )}
       </div>
-      {modalOpen && <SignalModal signal={signal} onClose={() => setModalOpen(false)} onExecute={handleExecute} executionMode={executionMode} />}
-    </>
+
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        {[
+          ['Entry', signal.entry],
+          ['SL', signal.sl],
+          ['TP', signal.tp],
+          ['BE', signal.be],
+        ].map(([k, v]) => (
+          <div key={k} className="bg-bg-elevated/60 rounded-lg p-2 text-center">
+            <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">{k}</div>
+            <div className="text-xs font-semibold tabular-nums truncate">{v != null ? Number(v).toFixed(4) : '—'}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted mb-3">
+        <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border">{signal.rr || '1:3.0'}</span>
+        {signal.trend && <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border">{signal.trend}</span>}
+        {signal.entryTrigger && (
+          <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border truncate max-w-[180px]">
+            {signal.entryTrigger}
+          </span>
+        )}
+      </div>
+
+      {msg && (
+        <div className={clsx('text-xs mb-3 px-2.5 py-1.5 rounded-lg border',
+          msg.startsWith('Filled') ? 'bg-accent-green/10 border-accent-green/25 text-accent-green' : 'bg-accent-red/10 border-accent-red/25 text-accent-red'
+        )}>{msg}</div>
+      )}
+
+      {!executed && (
+        <div className="flex gap-2">
+          {(executionMode === 'SEMI-AUTO' || executionMode === 'MANUAL') && (
+            <button onClick={execute} disabled={busy}
+              className="btn-primary flex-1 flex items-center justify-center gap-1.5 disabled:opacity-50">
+              <Zap size={14} />
+              {busy ? 'Sending…' : 'Execute'}
+            </button>
+          )}
+          {executionMode === 'FULL-AUTO' && (
+            <div className="flex-1 text-center text-xs text-accent-green py-2.5 rounded-xl bg-accent-green/5 border border-accent-green/20">
+              Auto-executing…
+            </div>
+          )}
+          <button onClick={() => dismissSignal(signal.id)} className="btn-ghost px-3">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
 export default function Signals() {
-  const { signals, executionMode, settings } = useStore()
-  const [filter, setFilter] = useState('ALL')
-  const filtered = signals.filter(s => {
-    if (filter === 'LONG')    return s.direction === 'LONG'
-    if (filter === 'SHORT')   return s.direction === 'SHORT'
-    return true
-  })
+  const { signals } = useStore()
+  const active = (signals || []).filter(s => s.status === 'ACTIVE')
+  const pending = active.filter(s => !s.executed)
+  const done = active.filter(s => s.executed)
+
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: 'Long',  value: signals.filter(s => s.direction === 'LONG').length,  color: 'text-accent-green' },
-          { label: 'Short', value: signals.filter(s => s.direction === 'SHORT').length, color: 'text-accent-red' },
-          { label: 'Total', value: signals.length,                                      color: 'text-accent-cyan' },
-        ].map(s => (
-          <div key={s.label} className="card p-4 text-center">
-            <div className={clsx('font-display text-2xl font-bold', s.color)}>{s.value}</div>
-            <div className="font-body text-xs text-text-muted mt-1">{s.label}</div>
-          </div>
-        ))}
-      </div>
-      <div className={clsx('flex items-center gap-3 px-4 py-3 rounded-xl border',
-        executionMode === 'FULL-AUTO' ? 'bg-accent-green/5 border-accent-green/20'
-        : executionMode === 'SEMI-AUTO' ? 'bg-accent-yellow/5 border-accent-yellow/20'
-        : 'bg-bg-elevated border-bg-border'
-      )}>
-        <span className={clsx('w-2 h-2 rounded-full live-dot',
-          executionMode === 'FULL-AUTO' ? 'bg-accent-green' : executionMode === 'SEMI-AUTO' ? 'bg-accent-yellow' : 'bg-text-muted'
-        )} />
-        <div className="flex-1">
-          <div className={clsx('font-body text-sm font-semibold',
-            executionMode === 'FULL-AUTO' ? 'text-accent-green' : executionMode === 'SEMI-AUTO' ? 'text-accent-yellow' : 'text-text-secondary'
-          )}>{executionMode}</div>
-          <div className="font-body text-xs text-text-muted">
-            {executionMode === 'FULL-AUTO' ? 'Auto-executing ACTIVE signals within safety limits'
-            : executionMode === 'SEMI-AUTO' ? 'Tap Execute on any signal to place order'
-            : 'View-only mode — switch to Semi or Full-Auto to trade'}
-          </div>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-lg font-bold">Live signals</h1>
+          <p className="text-xs text-text-muted mt-0.5">XRP/USDT · confluence engine</p>
         </div>
-        <span className="font-body text-xs text-text-muted">RR &ge; {settings.minRR}:1</span>
+        <div className="flex items-center gap-1.5 text-xs text-text-muted">
+          <Radio size={14} className="text-accent-cyan" />
+          {pending.length} active
+        </div>
       </div>
-      <div className="flex gap-1 bg-bg-card border border-bg-border rounded-lg p-1 w-fit">
-        {['ALL','LONG','SHORT'].map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={clsx('px-2.5 py-1 rounded-md font-body text-xs transition-all',
-              filter === f ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20' : 'text-text-muted hover:text-text-secondary'
-            )}>{f}</button>
-        ))}
-      </div>
-      {filtered.length === 0 ? (
+
+      {active.length === 0 ? (
         <div className="card p-12 text-center">
-          <Activity size={32} className="text-text-muted mx-auto mb-3" />
-          <p className="font-display text-sm font-bold text-text-primary mb-1">No signals</p>
-          <p className="font-body text-xs text-text-muted">Engine scans every 5 min · Signals expire after 4 hours</p>
+          <Radio size={28} className="mx-auto text-text-muted mb-3 opacity-50" />
+          <div className="text-sm text-text-secondary">No active signals</div>
+          <div className="text-xs text-text-muted mt-1">Scanning every 5 min on 1H close</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-          {filtered.map(s => <SignalCard key={s.id} signal={s} />)}
+        <div className="space-y-3">
+          {pending.map(s => <SignalCard key={s.id} signal={s} />)}
+          {done.length > 0 && (
+            <>
+              <div className="text-[10px] uppercase tracking-widest text-text-muted pt-2">Executed</div>
+              {done.map(s => <SignalCard key={s.id} signal={s} />)}
+            </>
+          )}
         </div>
       )}
     </div>

@@ -3,150 +3,79 @@
 @tailwind utilities;
 
 @layer base {
-  * {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
-
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-tap-highlight-color: transparent; }
   body {
-    background-color: #080B14;
+    background: #070A12;
     color: #E8F0FF;
-    font-family: 'IBM Plex Sans', sans-serif;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
   }
-
-  ::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: #0D1117;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: #1C2840;
-    border-radius: 2px;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: #00D4FF40;
-  }
+  ::-webkit-scrollbar { width: 3px; height: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #1C2840; border-radius: 2px; }
 }
 
 @layer components {
   .card {
-    @apply bg-bg-card border border-bg-border rounded-xl shadow-card;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    @apply bg-bg-card border border-bg-border rounded-2xl;
+    background: linear-gradient(180deg, rgba(15,21,32,0.95) 0%, rgba(12,17,26,0.98) 100%);
   }
-  .card:hover {
-    border-color: rgba(0, 212, 255, 0.15);
+  .card-glow {
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.06), 0 8px 32px rgba(0,0,0,0.35);
   }
-
-  .card-elevated {
-    @apply bg-bg-elevated border border-bg-border rounded-xl shadow-card;
-  }
-
-  .btn-primary {
-    @apply bg-accent-cyan text-bg-primary font-semibold px-4 py-2 rounded-lg
-           hover:bg-accent-cyan/90 transition-all duration-200 font-body text-sm;
-  }
-
-  .btn-ghost {
-    @apply border border-bg-border text-text-secondary px-4 py-2 rounded-lg
-           hover:border-accent-cyan/40 hover:text-text-primary transition-all duration-200 font-body text-sm;
-  }
-
-  .badge-long {
-    @apply bg-accent-green/10 text-accent-green border border-accent-green/20 
-           text-xs font-body px-2 py-0.5 rounded;
-  }
-
-  .badge-short {
-    @apply bg-accent-red/10 text-accent-red border border-accent-red/20 
-           text-xs font-body px-2 py-0.5 rounded;
-  }
-
-  .badge-wait {
-    @apply bg-accent-yellow/10 text-accent-yellow border border-accent-yellow/20 
-           text-xs font-body px-2 py-0.5 rounded;
-  }
-
-  .stat-value {
-    @apply font-display text-xl font-bold text-text-primary;
-  }
-
   .stat-label {
-    @apply font-body text-xs text-text-secondary uppercase tracking-widest;
+    @apply text-[10px] sm:text-xs uppercase tracking-[0.14em] text-text-muted font-medium;
   }
-
-  .glow-cyan {
-    box-shadow: 0 0 20px rgba(0, 212, 255, 0.2), 0 0 40px rgba(0, 212, 255, 0.05);
+  .stat-value {
+    @apply font-display text-lg sm:text-xl font-bold text-text-primary tabular-nums;
   }
-
-  .glow-green {
-    box-shadow: 0 0 20px rgba(0, 255, 136, 0.2), 0 0 40px rgba(0, 255, 136, 0.05);
+  .btn-primary {
+    @apply bg-accent-cyan text-bg-primary font-semibold px-4 py-2.5 rounded-xl
+           hover:brightness-110 active:scale-[0.98] transition-all text-sm;
   }
-
-  .glow-red {
-    box-shadow: 0 0 20px rgba(255, 61, 107, 0.2);
+  .btn-ghost {
+    @apply border border-bg-border text-text-secondary px-4 py-2.5 rounded-xl
+           hover:border-accent-cyan/40 hover:text-text-primary active:scale-[0.98]
+           transition-all text-sm;
   }
-
-  .scanline::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 2px,
-      rgba(0, 212, 255, 0.01) 2px,
-      rgba(0, 212, 255, 0.01) 4px
-    );
-    pointer-events: none;
-    border-radius: inherit;
+  .badge-long {
+    @apply bg-accent-green/10 text-accent-green border border-accent-green/25
+           text-[10px] font-semibold px-2 py-0.5 rounded-md uppercase tracking-wide;
   }
+  .badge-short {
+    @apply bg-accent-red/10 text-accent-red border border-accent-red/25
+           text-[10px] font-semibold px-2 py-0.5 rounded-md uppercase tracking-wide;
+  }
+  .live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+  .page-enter { animation: pageIn 0.25s ease-out; }
+  .safe-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 }
 
-/* Animated grid background */
-.grid-bg {
-  background-image: 
-    linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
-  background-size: 40px 40px;
-}
-
-/* Live indicator pulse */
-@keyframes livePulse {
+@keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
+  50% { opacity: 0.45; transform: scale(0.85); }
 }
-
-.live-dot {
-  animation: livePulse 1.5s ease-in-out infinite;
-}
-
-/* Mode toggle transitions */
-.mode-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Chart tooltip */
-.recharts-tooltip-wrapper {
-  outline: none !important;
-}
-
-/* Number counter animation */
-@keyframes countUp {
-  from { opacity: 0; transform: translateY(4px); }
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.count-animate {
-  animation: countUp 0.3s ease-out;
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00D4FF;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0,212,255,0.5);
 }
