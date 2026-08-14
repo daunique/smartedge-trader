@@ -90,7 +90,15 @@ export default function Settings() {
   const [saved, setSaved]           = useState(false)
   const [saving, setSaving]         = useState(false)
   const [error, setError]           = useState(null)
-  const [local, setLocal]           = useState({ ...settings })
+  const [local, setLocal]           = useState(() => {
+    const s = { ...settings }
+    const rpt = s.riskPerTrade
+    s.riskPerTrade = (rpt && typeof rpt === 'object')
+      ? { XRPUSDT: Number(rpt.XRPUSDT) || 10 }
+      : { XRPUSDT: 10 }
+    if (s.beTrigger == null) s.beTrigger = 2.0
+    return s
+  })
 
   const update = (key, val) => setLocal(prev => ({ ...prev, [key]: val }))
 
@@ -138,22 +146,18 @@ export default function Settings() {
           <Shield size={16} className="text-accent-cyan" />
           <h3 className="font-display text-sm font-bold text-text-primary">Risk Management</h3>
         </div>
-        <SliderField label="Risk Per Trade — XRP" desc="% of portfolio risked per XRPUSDT position"
-          value={local.riskPerTrade.XRPUSDT} min={0.5} max={10} step={0.5} unit="%"
-          onChange={v => update('riskPerTrade', { ...local.riskPerTrade, XRPUSDT: v })}
-          danger={local.riskPerTrade.XRPUSDT > 6} />
-        <SliderField label="Risk Per Trade — ETH" desc="% of portfolio risked per ETHUSDT position"
-          value={local.riskPerTrade.ETHUSDT} min={0.5} max={10} step={0.5} unit="%"
-          onChange={v => update('riskPerTrade', { ...local.riskPerTrade, ETHUSDT: v })}
-          danger={local.riskPerTrade.ETHUSDT > 5} />
-        <SliderField label="Minimum R:R Ratio" desc="Skip signals below this threshold — the validated strategy always fires at exactly 3:1"
+        <SliderField label="Risk Per Trade" desc="XRPUSDT — % of equity risked per trade (validated: 10%)"
+          value={(local.riskPerTrade && local.riskPerTrade.XRPUSDT) || 10} min={1} max={15} step={0.5} unit="%"
+          onChange={v => update('riskPerTrade', { XRPUSDT: v })}
+          danger={((local.riskPerTrade && local.riskPerTrade.XRPUSDT) || 10) > 12} />
+        <SliderField label="Minimum R:R Ratio" desc="Skip signals below this threshold (strategy targets 3:1)"
           value={local.minRR} min={1} max={5} step={0.5} unit=":1"
           onChange={v => update('minRR', v)} />
-        <SliderField label="Daily Loss Limit" desc="Safety net only — not itself backtested. Set high enough that it only trips on a genuine malfunction, not a normal losing trade"
+        <SliderField label="Daily Loss Limit" desc="Pause new trades if realized daily loss exceeds this % of equity"
           value={local.dailyLossLimit} min={5} max={40} step={1} unit="%"
           onChange={v => update('dailyLossLimit', v)}
           danger={local.dailyLossLimit < 10} />
-        <SliderField label="Max Trades Per Day" desc="Hard cap on daily executions (signals average less than 1/day, so this rarely binds)"
+        <SliderField label="Max Trades Per Day" desc="Hard cap on daily executions"
           value={local.maxTradesPerDay} min={1} max={10} step={1} unit=""
           onChange={v => update('maxTradesPerDay', v)} />
       </div>
@@ -165,14 +169,16 @@ export default function Settings() {
           <h3 className="font-display text-sm font-bold text-text-primary">Strategy Parameters</h3>
         </div>
         <div className="py-3 border-b border-bg-border/50 font-body text-xs text-text-muted leading-relaxed">
-          Trend filter, entry trigger, and volatility filter are fixed per symbol
-          (SMA-cross trend + candle-structure entry + ATR volatility exclusion) —
-          not exposed here, since they're the validated combination, not independent
-          dials. See README for exact values.
+          XRPUSDT only — SMA(50/200) trend, body-ratio &gt; 0.789 entry, SL 1.5×ATR,
+          TP 4.5×ATR (3:1), skip high-vol (ATR% &gt; 60th pctl). Risk-based size, max 15× leverage.
         </div>
-        <SelectField label="Break-Even Trigger" desc="Move SL to BE when this RR is achieved"
+        <SelectField label="Break-Even Trigger" desc="Move SL to breakeven when this R-multiple is reached"
           value={local.beTrigger}
-          options={[{value:0.5,label:'At 1:0.5'},{value:1,label:'At 1:1'},{value:1.5,label:'At 1:1.5 (validated default)'}]}
+          options={[
+            {value:1.5, label:'At 1.5R'},
+            {value:2.0, label:'At 2.0R (validated)'},
+            {value:2.5, label:'At 2.5R'},
+          ]}
           onChange={v => update('beTrigger', parseFloat(v))} />
       </div>
 

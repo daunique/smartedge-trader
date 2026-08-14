@@ -1,16 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-// Aligned to the actual backtest (single train/test split, Jan-Jun 2026 1H
-// data — see README). riskPerTrade is per-symbol, not a flat number: XRP and
-// ETH use different risk levels because that's what the validated strategy's
-// risk/drawdown sweep actually supports for each pair.
 const DEFAULT_SETTINGS = {
-  riskPerTrade:    { XRPUSDT: 6, ETHUSDT: 5 },
+  riskPerTrade:    { XRPUSDT: 10 },
   minRR:           3,
   maxTradesPerDay: 4,
-  dailyLossLimit:  20,
-  beTrigger:       1.5,
+  dailyLossLimit:  25,
+  beTrigger:       2.0,
   notifications:   true,
   mobileAlerts:    true,
   apiKey:          '',
@@ -20,14 +16,12 @@ const DEFAULT_SETTINGS = {
 export const useStore = create(
   persist(
     (set, get) => ({
-      // Persisted
       executionMode: 'SEMI-AUTO',
       accountMode:   'DEMO',
       marketFilter:  'ALL',
       activePage:    'dashboard',
       settings:      DEFAULT_SETTINGS,
 
-      // Runtime
       sidebarOpen:         false,
       systemPaused:        false,
       backendConnected:    false,
@@ -48,8 +42,8 @@ export const useStore = create(
       maxDrawdown:         0,
       sharpeRatio:         0,
       activeExchange:      'bybit',
+      openPnl:             0,
 
-      // Actions
       setExecutionMode:      (mode) => set({ executionMode: mode }),
       setAccountMode:        (mode) => set({ accountMode: mode }),
       setMarketFilter:       (f)    => set({ marketFilter: f }),
@@ -65,16 +59,22 @@ export const useStore = create(
         settings: { ...DEFAULT_SETTINGS, ...state.settings, ...updates }
       })),
 
-      refreshPositions: (positions) => set({ positions: positions || [] }),
+      refreshPositions: (positions) => {
+        const list = positions || []
+        const openPnl = list.reduce((s, p) => s + (Number(p.pnl) || 0), 0)
+        set({ positions: list, openPnl })
+      },
       refreshSignals:   (signals)   => set({ signals: signals || [] }),
       refreshHistory:   (trades)    => set({ tradeHistory: trades || [] }),
 
       updatePosition: (id, updates) => set(state => ({
         positions: state.positions.map(p => p.id === id ? { ...p, ...updates } : p)
       })),
-      closePosition: (id) => set(state => ({
-        positions: state.positions.filter(p => p.id !== id)
-      })),
+      closePosition: (id) => set(state => {
+        const positions = state.positions.filter(p => p.id !== id)
+        const openPnl = positions.reduce((s, p) => s + (Number(p.pnl) || 0), 0)
+        return { positions, openPnl }
+      }),
       dismissSignal: (id) => set(state => ({
         signals: state.signals.filter(s => s.id !== id)
       })),
@@ -82,55 +82,72 @@ export const useStore = create(
       refreshPortfolio: (data) => {
         if (!data) return
         const trades  = get().tradeHistory || []
-        const wins    = trades.filter(t => t.status === 'TP')
-        const total   = trades.length
+        const closed  = trades.filter(t => t.status === 'TP' || t.status === 'SL' || t.status === 'BE' || t.status === 'CLOSED')
+        const wins    = closed.filter(t => (t.pnl || 0) > 0)
+        const total   = closed.length
         const winRate = total > 0 ? Math.round((wins.length / total) * 100) : 0
 
-        const sorted = [...trades].sort((a, b) => new Date(b.date) - new Date(a.date))
-        let streak = 0, streakType = null
+        const sorted = [...closed].sort((a, b) => new Date(b.date) - new Date(a.date))
+        let streak = 0
+        let streakType = null
         for (const t of sorted) {
-          if (!streakType) { streakType = t.status; streak = 1 }
-          else if (t.status === streakType) streak++
+          const isWin = (t.pnl || 0) > 0
+          const type = isWin ? 'W' : 'L'
+          if (!streakType) { streakType = type; streak = 1 }
+          else if (type === streakType) streak++
           else break
         }
+        if (streakType === 'L') streak = -streak
 
-        const weekAgo   = Date.now() - 7 * 86400000
-        const weeklyPnl = trades
+        const weekAgo = Date.now() - 7 * 86400000
+        const weeklyPnl = closed
           .filter(t => new Date(t.date).getTime() > weekAgo)
           .reduce((s, t) => s + (t.pnl || 0), 0)
 
-        const avgRR = wins.length > 0
-          ? Math.round((wins.reduce((s, t) => s + parseFloat(t.rr || 0), 0) / wins.length) * 10) / 10
+        const monthStart = new Date()
+        monthStart.setDate(1)
+        monthStart.setHours(0, 0, 0, 0)
+        const monthlyPnl = closed
+          .filter(t => new Date(t.date) >= monthStart)
+          .reduce((s, t) => s + (t.pnl || 0), 0)
+
+        const rrValues = closed
+          .map(t => parseFloat(t.rr))
+          .filter(v => !isNaN(v) && isFinite(v))
+        const avgRR = rrValues.length > 0
+          ? Math.round((rrValues.reduce((s, v) => s + v, 0) / rrValues.length) * 100) / 100
           : 0
 
         set({
-          portfolioBalance:    data.balance       ?? get().portfolioBalance,
-          dailyPnl:            data.daily_pnl     ?? get().dailyPnl,
-          dailyPnlPct:         data.daily_pnl_pct ?? get().dailyPnlPct,
+          portfolioBalance: data.balance       ?? get().portfolioBalance,
+          dailyPnl:         data.daily_pnl     ?? get().dailyPnl,
+          dailyPnlPct:      data.daily_pnl_pct ?? get().dailyPnlPct,
           winRate,
           currentStreak: streak,
           weeklyPnl:     Math.round(weeklyPnl * 100) / 100,
+          monthlyPnl:    Math.round(monthlyPnl * 100) / 100,
           totalTrades:   total,
           avgRR,
         })
       },
     }),
     {
-      name: 'smartedge-v3',
-      version: 1,   // bump whenever the persisted `settings` shape changes
-      // Browsers with settings cached from before riskPerTrade became a
-      // per-symbol object (or from the old ML/ORB template fields) would
-      // otherwise rehydrate the stale shape and silently corrupt it again --
-      // this is what caused the 500 on /api/execute. Normalize on load
-      // instead of trusting whatever's in localStorage.
+      name: 'smartedge-v4',
+      version: 2,
       migrate: (persistedState, fromVersion) => {
         const s = persistedState?.settings || {}
-        const legacyKeys = ['mlThreshold', 'orbTimeframe', 'trailingStop']
-        legacyKeys.forEach(k => delete s[k])
-        const riskPerTrade = (s.riskPerTrade && typeof s.riskPerTrade === 'object')
-          ? { ...DEFAULT_SETTINGS.riskPerTrade, ...s.riskPerTrade }
-          : DEFAULT_SETTINGS.riskPerTrade   // legacy flat number (or missing) -> current defaults
-        persistedState.settings = { ...DEFAULT_SETTINGS, ...s, riskPerTrade }
+        ;['mlThreshold', 'orbTimeframe', 'trailingStop', 'ETHUSDT'].forEach(k => delete s[k])
+        let riskPerTrade = s.riskPerTrade
+        if (!riskPerTrade || typeof riskPerTrade !== 'object') {
+          riskPerTrade = { XRPUSDT: 10 }
+        } else {
+          riskPerTrade = { XRPUSDT: Number(riskPerTrade.XRPUSDT) || 10 }
+          delete riskPerTrade.ETHUSDT
+        }
+        if (s.beTrigger !== undefined && Number(s.beTrigger) < 2) {
+          s.beTrigger = 2.0
+        }
+        persistedState.settings = { ...DEFAULT_SETTINGS, ...s, riskPerTrade, beTrigger: s.beTrigger ?? 2.0 }
         return persistedState
       },
       partialize: (state) => ({
@@ -141,9 +158,7 @@ export const useStore = create(
         settings:      state.settings,
       }),
       onRehydrateStorage: () => (state, error) => {
-        if (error) {
-          console.error('Store rehydration failed:', error)
-        }
+        if (error) console.error('Store rehydration failed:', error)
       },
     }
   )

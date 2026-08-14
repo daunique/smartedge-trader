@@ -5,7 +5,7 @@ import { wsService } from '../services/websocket'
 import { priceFeed } from '../services/priceFeed'
 import { notifications } from '../services/notifications'
 
-const CRYPTO_SYMBOLS = ['XRPUSDT','ETHUSDT']  // the two pairs this strategy is validated on
+const CRYPTO_SYMBOLS = ['XRPUSDT']
 const POLL_INTERVAL  = 15000
 const PRICE_INTERVAL = 1000
 

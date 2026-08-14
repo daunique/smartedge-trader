@@ -39,6 +39,10 @@
 @layer components {
   .card {
     @apply bg-bg-card border border-bg-border rounded-xl shadow-card;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .card:hover {
+    border-color: rgba(0, 212, 255, 0.15);
   }
 
   .card-elevated {

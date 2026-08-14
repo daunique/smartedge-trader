@@ -13,7 +13,7 @@ from app.engine.signal_engine import (
 )
 
 # ── Position sizing ───────────────────────────────────────────────
-MAX_LEVERAGE = {"XRPUSDT": 15.0, "ETHUSDT": 20.0}  # matches the backtest's safety ceiling
+MAX_LEVERAGE = {"XRPUSDT": 15.0}
 
 def calc_position_size(
     balance: float,
@@ -41,8 +41,8 @@ def calc_position_size(
     return round(qty, 6)
 
 # ── Min qty per symbol (only the two validated pairs) ─────────────
-MIN_QTY  = {"XRPUSDT": 1.0, "ETHUSDT": 0.01}
-QTY_STEP = {"XRPUSDT": 1.0, "ETHUSDT": 0.01}
+MIN_QTY  = {"XRPUSDT": 1.0}
+QTY_STEP = {"XRPUSDT": 1.0}
 
 # ── Safety checklist ──────────────────────────────────────────────
 @dataclass
@@ -84,11 +84,7 @@ async def run_safety_checks(settings: dict, trades_today: int, daily_loss: float
     return SafetyCheck(True, "All checks passed", trades_today, loss_pct, balance)
 
 # ── Order executor ────────────────────────────────────────────────
-# Per-symbol risk: the two pairs use different risk-per-trade because that's
-# what the backtest's risk/drawdown sweep actually validated -- XRP's tighter
-# max-drawdown profile supports more risk per trade than ETH's for a
-# comparable drawdown outcome. Don't collapse these to one shared number.
-RISK_PER_TRADE_PCT = {"XRPUSDT": 6.0, "ETHUSDT": 5.0}
+RISK_PER_TRADE_PCT = {"XRPUSDT": 10.0}
 
 class AutoExecutor:
     def __init__(self):
@@ -96,13 +92,11 @@ class AutoExecutor:
         # Jan-Jun 2026 1H data -- see README). No ML gating: nothing in the
         # validated strategy conditions on a model score.
         self.settings = {
-            "riskPerTrade":    dict(RISK_PER_TRADE_PCT),  # per-symbol, see above
-            "minRR":           3.0,     # matches TP/SL = 4.5xATR / 1.5xATR exactly
-            "maxTradesPerDay": 4,       # safety net only -- signals average ~1 every 1.6-2.3 days
-            "dailyLossLimit":  20.0,    # safety net only -- not itself backtested; set well
-                                        # above a single trade's risk so it only trips on a
-                                        # genuine malfunction, not normal operation
-            "beTrigger":       1.5,
+            "riskPerTrade":    dict(RISK_PER_TRADE_PCT),
+            "minRR":           3.0,
+            "maxTradesPerDay": 4,
+            "dailyLossLimit":  25.0,
+            "beTrigger":       2.0,
         }
         self.mode          = "SEMI-AUTO"  # MANUAL | SEMI-AUTO | FULL-AUTO
         self.paused        = False
@@ -118,6 +112,7 @@ class AutoExecutor:
         # never detected. This high-water mark catches it even if price
         # has already pulled back by the time the next poll runs.
         self.peak_favorable = {}
+        self._orig_risk = {}
 
     def set_broadcast(self, cb): self.broadcast_cb = cb
     def set_mode(self, mode):    self.mode = mode
@@ -136,8 +131,7 @@ class AutoExecutor:
                 s["riskPerTrade"] = merged
             elif isinstance(rpt, (int, float)):
                 # Legacy flat value: apply to both symbols rather than reject outright.
-                print(f"[SETTINGS] riskPerTrade sent as a flat number ({rpt}) -- "
-                      f"expected a per-symbol object, applying to both symbols")
+                print(f"[SETTINGS] riskPerTrade sent as flat number ({rpt}) — applying to XRPUSDT")
                 s["riskPerTrade"] = {sym: float(rpt) for sym in RISK_PER_TRADE_PCT}
             else:
                 print(f"[SETTINGS] riskPerTrade had an unexpected type ({type(rpt)}) -- ignoring, keeping current value")
@@ -209,7 +203,7 @@ class AutoExecutor:
                                   f"matching backtest behavior, new signals for a pair "
                                   f"aren't acted on until the current trade closes"}
 
-        # Position size -- risk % is per-symbol (XRP 6% / ETH 5%), not a flat number.
+        # Position size — risk % is per-symbol (XRP 10%).
         # Defensive against riskPerTrade being a stale flat number (shouldn't happen
         # post-update_settings-fix, but a currently-running instance may still be
         # holding one in memory from before a redeploy) rather than crashing execution.
@@ -424,20 +418,30 @@ class AutoExecutor:
         peak       = float(position.get("peak", current))
         sl         = float(position.get("sl", 0))
         direction  = position.get("direction")
-        be_trigger = self.settings.get("beTrigger", 1.0)
+        be_trigger = self.settings.get("beTrigger", 2.0)
 
         if sl == 0:
-            return False  # no valid SL to compute R-multiples from -- caller must protect first, not guess a risk denominator
+            return False
 
-        risk = abs(entry - sl)
-        if risk == 0: return False
+        # Prefer original risk distance (entry vs initial SL) so BE R stays
+        # correct even if SL was already partially adjusted.
+        orig_risk = float(position.get("orig_risk") or 0)
+        risk = orig_risk if orig_risk > 0 else abs(entry - sl)
+        if risk <= 0:
+            return False
+
+        # Already at/beyond breakeven SL — nothing to do
+        if direction == "LONG" and sl >= entry:
+            return False
+        if direction == "SHORT" and sl <= entry and sl > 0:
+            return False
 
         rr_achieved = (
             (peak - entry) / risk if direction == "LONG"
             else (entry - peak) / risk
         )
 
-        if rr_achieved >= be_trigger and sl != entry:
+        if rr_achieved >= be_trigger:
             # Small buffer beyond exact entry, matching the backtest
             # (be_buffer in backtest.py) -- without it, a "breakeven" exit
             # still nets a small loss once fees are accounted for.
@@ -507,17 +511,20 @@ class AutoExecutor:
                         )
                         self.peak_favorable[symbol] = peak
 
+                        entry_px = float(p.get("avgPrice") or 0)
+                        sl_px = float(p.get("stopLoss") or 0)
+                        if not hasattr(self, "_orig_risk"):
+                            self._orig_risk = {}
+                        if symbol not in self._orig_risk and sl_px > 0 and entry_px > 0:
+                            self._orig_risk[symbol] = abs(entry_px - sl_px)
                         pos = {
                             "symbol":      symbol,
                             "direction":   direction,
-                            "entry":       float(p.get("avgPrice")  or 0),
+                            "entry":       entry_px,
                             "current":     current,
                             "peak":        peak,
-                            "sl":          float(p.get("stopLoss")  or 0),
-                            # Real value from Bybit, not assumed -- 0 only
-                            # holds for one-way mode; hedge mode uses 1/2,
-                            # and every trading-stop call silently fails if
-                            # this doesn't match the account's actual mode.
+                            "sl":          sl_px,
+                            "orig_risk":   self._orig_risk.get(symbol, 0),
                             "positionIdx": int(p.get("positionIdx", 0)),
                         }
                         if pos["sl"] == 0:
@@ -530,6 +537,8 @@ class AutoExecutor:
                     for sym in list(self.peak_favorable):
                         if sym not in open_symbols:
                             del self.peak_favorable[sym]
+                            if hasattr(self, "_orig_risk") and sym in self._orig_risk:
+                                del self._orig_risk[sym]
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
             # 10s, down from 30s -- this loop only fetches one lightweight

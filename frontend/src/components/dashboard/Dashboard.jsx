@@ -162,7 +162,7 @@ function NextCandleCountdown() {
         <span className="stat-label">Next Candle Close</span>
         <Clock size={14} className="text-text-muted" />
       </div>
-      <div className="font-body text-xs font-semibold mb-1 text-accent-cyan">1H · XRP + ETH · 24/7</div>
+      <div className="font-body text-xs font-semibold mb-1 text-accent-cyan">1H · XRP/USDT · 24/7</div>
       <div className="font-display text-lg font-bold text-text-primary">{timeLeft}</div>
     </div>
   )
@@ -172,24 +172,27 @@ function StreakCard({ tradeHistory }) {
   // Calculate current streak and best streak from real data
   const sorted = [...tradeHistory].sort((a, b) => new Date(b.date) - new Date(a.date))
 
+  const isWinTrade = (tr) => (tr.pnl || 0) > 0
   let currentStreak = 0
   let streakType    = null
-  for (const t of sorted) {
-    if (!streakType) { streakType = t.status; currentStreak = 1 }
-    else if (t.status === streakType) currentStreak++
+  for (const tr of sorted) {
+    const type = isWinTrade(tr) ? 'W' : 'L'
+    if (!streakType) { streakType = type; currentStreak = 1 }
+    else if (type === streakType) currentStreak++
     else break
   }
 
   let bestWin = 0, bestLoss = 0, cur = 0, curType = null
-  for (const t of [...tradeHistory].sort((a, b) => new Date(a.date) - new Date(b.date))) {
-    if (!curType) { curType = t.status; cur = 1 }
-    else if (t.status === curType) { cur++ }
-    else { curType = t.status; cur = 1 }
-    if (curType === 'TP') bestWin  = Math.max(bestWin, cur)
-    else                  bestLoss = Math.max(bestLoss, cur)
+  for (const tr of [...tradeHistory].sort((a, b) => new Date(a.date) - new Date(b.date))) {
+    const type = isWinTrade(tr) ? 'W' : 'L'
+    if (!curType) { curType = type; cur = 1 }
+    else if (type === curType) { cur++ }
+    else { curType = type; cur = 1 }
+    if (curType === 'W') bestWin  = Math.max(bestWin, cur)
+    else                 bestLoss = Math.max(bestLoss, cur)
   }
 
-  const isWin = streakType === 'TP'
+  const isWin = streakType === 'W'
 
   return (
     <div className="card p-4">
@@ -259,13 +262,9 @@ export default function Dashboard() {
           <span className={clsx('w-1.5 h-1.5 rounded-full live-dot', accountMode === 'LIVE' ? 'bg-accent-green' : 'bg-accent-yellow')} />
           {accountMode} · Bybit
         </div>
-        <div className="flex items-center gap-1 ml-auto">
-          {['ALL','CRYPTO','FOREX'].map(f => (
-            <button key={f} onClick={() => setMarketFilter(f)}
-              className={clsx('px-2.5 py-1 rounded-lg font-body text-xs transition-all',
-                marketFilter === f ? 'bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan' : 'text-text-muted hover:text-text-secondary'
-              )}>{f}</button>
-          ))}
+        <div className="flex items-center gap-2 ml-auto px-3 py-1.5 rounded-lg border bg-bg-elevated border-bg-border font-body text-xs text-text-secondary">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan" />
+          XRP/USDT only
         </div>
       </div>
 

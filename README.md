@@ -1,6 +1,6 @@
 # SmartEdge Trader
 
-Automated crypto trading system for **XRPUSDT** and **ETHUSDT** on Bybit
+Automated crypto trading system for **XRPUSDT** on Bybit
 (demo or live). Strategy is a fixed SMA-cross + candle-structure confluence,
 validated by backtest on Jan–Jun 2026 1H data (single train/test split, not
 a full walk-forward — see the backtest report for methodology and limits).
@@ -16,7 +16,7 @@ learned/fitted.
 | Volatility filter | both: skip when ATR is in the top 40% of its trailing 30-day range |
 | Stop / Target | both: SL = 1.5×ATR(14), TP = 4.5×ATR(14) (fixed 3:1 R:R) |
 | Breakeven | both: SL moves to entry once price is 1.5R in favor |
-| Risk per trade | XRP 6% · ETH 5% of equity, leverage derived from stop distance |
+| Risk per trade | XRP 10% of equity, leverage derived from stop distance |
 | Candles | 1H, 24/7 — no session/time-of-day gating |
 
 Change one side of a pair (e.g. just the entry trigger) and you're no longer
@@ -90,7 +90,7 @@ at all) is the reliable version of this, not the free-tier ping.
   heuristic, not a trained model, and wasn't part of what was backtested.
 - Removed dead code never actually imported anywhere (`trade_manager.py`,
   `exchange/bybit.py`) and trimmed `requirements.txt` to what's really used.
-- Risk-per-trade is per-symbol (XRP 6% / ETH 5%) with leverage set
+- Risk-per-trade is per-symbol (XRP 10%) with leverage set
   explicitly on the exchange to match, not left at whatever Bybit defaulted
   to; `minRR`/breakeven/daily-loss defaults match what was backtested.
 - Bybit request-signing, previously duplicated independently in two files,
