@@ -6,97 +6,80 @@ import { format } from 'date-fns'
 export default function History() {
   const { tradeHistory } = useStore()
   const [filter, setFilter] = useState('ALL')
+  const [pair, setPair] = useState('XRP')
 
   const trades = useMemo(() => {
     let list = [...(tradeHistory || [])].sort((a, b) => new Date(b.date) - new Date(a.date))
+    if (pair === 'XRP') list = list.filter(t => String(t.symbol || '').includes('XRP'))
     if (filter === 'WIN') list = list.filter(t => (t.pnl || 0) > 0)
     if (filter === 'LOSS') list = list.filter(t => (t.pnl || 0) <= 0)
     return list
-  }, [tradeHistory, filter])
+  }, [tradeHistory, filter, pair])
 
-  const totals = useMemo(() => {
-    const pnl = trades.reduce((s, t) => s + (t.pnl || 0), 0)
-    const wins = trades.filter(t => (t.pnl || 0) > 0).length
-    return { pnl, wins, n: trades.length }
-  }, [trades])
+  const net = trades.reduce((s, t) => s + (t.pnl || 0), 0)
+  const wins = trades.filter(t => (t.pnl || 0) > 0).length
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
         <div>
-          <h1 className="font-display text-lg font-bold">Trade history</h1>
-          <p className="text-xs text-text-muted mt-0.5">
-            {totals.n} trades · {totals.wins}W · net{' '}
-            <span className={totals.pnl >= 0 ? 'text-accent-green' : 'text-accent-red'}>
-              {totals.pnl >= 0 ? '+' : ''}${totals.pnl.toFixed(2)}
+          <h1 className="text-[15px] font-semibold">History</h1>
+          <p className="text-[11px] text-[#848E9C]">
+            {trades.length} trades · {wins}W ·{' '}
+            <span className={clsx('mono font-medium', net >= 0 ? 'pos' : 'neg')}>
+              {net >= 0 ? '+' : ''}{net.toFixed(2)}
             </span>
           </p>
         </div>
-        <div className="flex gap-1 p-1 rounded-xl bg-bg-elevated border border-bg-border">
-          {['ALL', 'WIN', 'LOSS'].map(f => (
-            <button key={f} onClick={() => setFilter(f)}
-              className={clsx(
-                'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                filter === f ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-text-muted hover:text-text-secondary'
-              )}>{f}</button>
-          ))}
+        <div className="flex gap-1">
+          <div className="flex p-0.5 rounded bg-[#161A1E] border border-[#1E2329]">
+            {['XRP', 'ALL'].map(p => (
+              <button key={p} onClick={() => setPair(p)}
+                className={clsx('px-2 py-1 rounded text-[10px] font-semibold',
+                  pair === p ? 'bg-[#1E2329] text-[#F0B90B]' : 'text-[#848E9C]')}>{p}</button>
+            ))}
+          </div>
+          <div className="flex p-0.5 rounded bg-[#161A1E] border border-[#1E2329]">
+            {['ALL', 'WIN', 'LOSS'].map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                className={clsx('px-2 py-1 rounded text-[10px] font-semibold',
+                  filter === f ? 'bg-[#1E2329] text-[#F0B90B]' : 'text-[#848E9C]')}>{f}</button>
+            ))}
+          </div>
         </div>
       </div>
 
       {trades.length === 0 ? (
-        <div className="card p-12 text-center text-sm text-text-muted">No trades yet</div>
+        <div className="card py-12 text-center text-[12px] text-[#848E9C]">No trades</div>
       ) : (
         <div className="card overflow-hidden">
-          {/* Desktop table */}
-          <div className="hidden sm:block overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-bg-border text-[10px] uppercase tracking-wider text-text-muted">
-                  <th className="px-4 py-3 font-medium">Time</th>
-                  <th className="px-4 py-3 font-medium">Pair</th>
-                  <th className="px-4 py-3 font-medium">Side</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">R</th>
-                  <th className="px-4 py-3 font-medium text-right">PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map((t, i) => (
-                  <tr key={t.id || i} className="border-b border-bg-border/50 hover:bg-bg-elevated/40">
-                    <td className="px-4 py-3 text-xs text-text-secondary whitespace-nowrap">
-                      {format(new Date(t.date), 'MMM d, HH:mm')}
-                    </td>
-                    <td className="px-4 py-3 text-xs font-semibold">{t.symbol}</td>
-                    <td className="px-4 py-3">
-                      <span className={t.direction === 'LONG' ? 'badge-long' : 'badge-short'}>{t.direction}</span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">{t.status}</td>
-                    <td className="px-4 py-3 text-xs tabular-nums text-text-secondary">{t.rr}</td>
-                    <td className={clsx('px-4 py-3 text-xs font-bold tabular-nums text-right',
-                      (t.pnl || 0) >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-                      {(t.pnl || 0) >= 0 ? '+' : ''}{(t.pnl || 0).toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-[72px_1fr_52px_56px] sm:grid-cols-[90px_1fr_56px_48px_48px_64px] gap-0 px-3 py-2 border-b border-[#1E2329] text-[10px] text-[#848E9C] uppercase tracking-wide font-medium">
+            <div>Time</div>
+            <div>Pair</div>
+            <div className="hidden sm:block">Side</div>
+            <div className="hidden sm:block">Exit</div>
+            <div className="text-right sm:text-left">R</div>
+            <div className="text-right">PnL</div>
           </div>
-
-          {/* Mobile cards */}
-          <div className="sm:hidden divide-y divide-bg-border/50">
+          <div className="divide-y divide-[#1E2329]">
             {trades.map((t, i) => (
-              <div key={t.id || i} className="px-4 py-3 flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold">{t.symbol}</span>
-                    <span className={t.direction === 'LONG' ? 'badge-long' : 'badge-short'}>{t.direction}</span>
-                  </div>
-                  <div className="text-[11px] text-text-muted mt-0.5">
-                    {format(new Date(t.date), 'MMM d · HH:mm')} · {t.status}
-                  </div>
+              <div key={t.id || i}
+                className="grid grid-cols-[72px_1fr_52px_56px] sm:grid-cols-[90px_1fr_56px_48px_48px_64px] gap-0 px-3 py-2.5 items-center hover:bg-[#161A1E]/50">
+                <div className="text-[11px] text-[#848E9C] mono">
+                  {format(new Date(t.date), 'MM/dd HH:mm')}
                 </div>
-                <div className={clsx('text-sm font-bold tabular-nums',
-                  (t.pnl || 0) >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-[12px] font-medium truncate">{t.symbol}</span>
+                  <span className={clsx('sm:hidden', t.direction === 'LONG' ? 'pill-long' : 'pill-short')}>
+                    {t.direction === 'LONG' ? 'L' : 'S'}
+                  </span>
+                </div>
+                <div className="hidden sm:block">
+                  <span className={t.direction === 'LONG' ? 'pill-long' : 'pill-short'}>{t.direction}</span>
+                </div>
+                <div className="hidden sm:block text-[11px] text-[#848E9C]">{t.status}</div>
+                <div className="mono text-[11px] text-[#848E9C] text-right sm:text-left">{t.rr || '—'}</div>
+                <div className={clsx('mono text-[12px] font-semibold text-right', (t.pnl || 0) >= 0 ? 'pos' : 'neg')}>
                   {(t.pnl || 0) >= 0 ? '+' : ''}{(t.pnl || 0).toFixed(2)}
                 </div>
               </div>

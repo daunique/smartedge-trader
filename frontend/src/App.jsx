@@ -1,7 +1,7 @@
 import React from 'react'
 import {
   LayoutDashboard, Radio, History as HistoryIcon,
-  BarChart3, Settings as SettingsIcon, Activity, Wifi, WifiOff
+  BarChart3, Settings as SettingsIcon, Activity
 } from 'lucide-react'
 import Dashboard from './components/dashboard/Dashboard'
 import Signals from './components/signals/Signals'
@@ -13,10 +13,10 @@ import { useStore } from './store'
 import clsx from 'clsx'
 
 const NAV = [
-  { id: 'dashboard',  label: 'Home',   icon: LayoutDashboard },
-  { id: 'signals',    label: 'Signals', icon: Radio },
-  { id: 'history',    label: 'History', icon: HistoryIcon },
-  { id: 'statistics', label: 'Stats',   icon: BarChart3 },
+  { id: 'dashboard',  label: 'Home',     icon: LayoutDashboard },
+  { id: 'signals',    label: 'Signals',  icon: Radio },
+  { id: 'history',    label: 'History',  icon: HistoryIcon },
+  { id: 'statistics', label: 'Stats',    icon: BarChart3 },
   { id: 'settings',   label: 'Settings', icon: SettingsIcon },
 ]
 
@@ -30,63 +30,58 @@ const PAGES = {
 
 function TopBar() {
   const {
-    backendConnected, wsConnected, executionMode, systemPaused,
-    portfolioBalance, livePrices, setPaused, setExecutionMode,
+    backendConnected, executionMode, portfolioBalance, livePrices, systemPaused,
   } = useStore()
-  const xrp = livePrices?.XRPUSDT
-  const price = xrp?.price ?? xrp?.last ?? null
-  const change = xrp?.change24h ?? xrp?.change ?? null
+  const xrp = livePrices?.XRPUSDT || {}
+  const price = xrp.price ?? xrp.last ?? xrp.close
+  const change = xrp.change24h ?? xrp.changePct ?? xrp.change
 
   return (
-    <header className="sticky top-0 z-40 border-b border-bg-border/80 bg-[#070A12]/90 backdrop-blur-xl">
-      <div className="max-w-6xl mx-auto px-3 sm:px-5 h-14 flex items-center gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-accent-cyan/15 border border-accent-cyan/30 flex items-center justify-center shrink-0">
-            <Activity size={16} className="text-accent-cyan" />
+    <header className="sticky top-0 z-40 bg-[#0B0E11]/95 border-b border-[#1E2329] backdrop-blur-md">
+      <div className="max-w-5xl mx-auto h-12 px-3 flex items-center gap-2.5">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="w-7 h-7 rounded bg-[#F0B90B]/15 flex items-center justify-center">
+            <Activity size={14} className="text-[#F0B90B]" />
           </div>
-          <div className="min-w-0">
-            <div className="font-display text-sm font-bold text-text-primary leading-tight">SmartEdge</div>
-            <div className="text-[10px] text-text-muted truncate">XRP/USDT · 1H</div>
+          <div className="leading-none">
+            <div className="text-[13px] font-semibold text-[#EAECEF]">SmartEdge</div>
+            <div className="text-[9px] text-[#848E9C] tracking-wide">XRPUSDT · 1H</div>
           </div>
         </div>
 
-        <div className="hidden sm:flex items-center gap-3 ml-4 px-3 py-1.5 rounded-xl bg-bg-elevated/60 border border-bg-border">
-          <span className="text-xs text-text-muted">XRP</span>
-          <span className="font-display text-sm font-bold tabular-nums">
-            {price != null ? Number(price).toFixed(4) : '—'}
+        <div className="h-5 w-px bg-[#1E2329] mx-0.5" />
+
+        <div className="flex items-baseline gap-1.5 min-w-0">
+          <span className="text-[10px] text-[#848E9C] font-medium">XRP</span>
+          <span className="mono text-[13px] font-semibold text-[#EAECEF]">
+            {price != null && Number(price) > 0 ? Number(price).toFixed(4) : '—'}
           </span>
-          {change != null && (
-            <span className={clsx('text-xs font-medium', Number(change) >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+          {change != null && !isNaN(Number(change)) && (
+            <span className={clsx('mono text-[11px] font-medium', Number(change) >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]')}>
               {Number(change) >= 0 ? '+' : ''}{Number(change).toFixed(2)}%
             </span>
           )}
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-bg-elevated border border-bg-border text-xs text-text-secondary">
-            <span className="tabular-nums font-display font-semibold text-text-primary">
-              ${Number(portfolioBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
+          <div className="hidden xs:block mono text-[12px] font-semibold text-[#EAECEF]">
+            ${Number(portfolioBalance || 0).toFixed(2)}
           </div>
-
           <div className={clsx(
-            'flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[10px] font-medium',
-            executionMode === 'FULL-AUTO'
-              ? 'bg-accent-green/10 border-accent-green/30 text-accent-green'
-              : executionMode === 'SEMI-AUTO'
-                ? 'bg-accent-yellow/10 border-accent-yellow/30 text-accent-yellow'
-                : 'bg-bg-elevated border-bg-border text-text-muted'
+            'flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border',
+            systemPaused
+              ? 'border-[#F6465D]/40 text-[#F6465D] bg-[#F6465D]/10'
+              : executionMode === 'FULL-AUTO'
+                ? 'border-[#0ECB81]/40 text-[#0ECB81] bg-[#0ECB81]/10'
+                : 'border-[#F0B90B]/40 text-[#F0B90B] bg-[#F0B90B]/10'
           )}>
-            {executionMode === 'FULL-AUTO' && <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" />}
-            {executionMode}
+            <span className={clsx('w-1.5 h-1.5 rounded-full',
+              systemPaused ? 'bg-[#F6465D]' : executionMode === 'FULL-AUTO' ? 'bg-[#0ECB81] live-dot' : 'bg-[#F0B90B]'
+            )} />
+            {systemPaused ? 'PAUSED' : executionMode}
           </div>
-
-          <div title={backendConnected ? 'Backend online' : 'Backend offline'}
-            className="w-8 h-8 rounded-lg border border-bg-border bg-bg-elevated flex items-center justify-center">
-            {backendConnected || wsConnected
-              ? <Wifi size={14} className="text-accent-green" />
-              : <WifiOff size={14} className="text-accent-red" />}
-          </div>
+          <div className={clsx('w-2 h-2 rounded-full', backendConnected ? 'bg-[#0ECB81]' : 'bg-[#F6465D]')}
+            title={backendConnected ? 'Online' : 'Offline'} />
         </div>
       </div>
     </header>
@@ -95,27 +90,26 @@ function TopBar() {
 
 function BottomNav() {
   const { activePage, setActivePage, signals } = useStore()
-  const activeSignals = (signals || []).filter(s => s.status === 'ACTIVE' && !s.executed).length
+  const n = (signals || []).filter(s => s.status === 'ACTIVE' && !s.executed).length
 
   return (
-    <nav className="fixed bottom-0 inset-x-0 z-40 border-t border-bg-border/80 bg-[#070A12]/95 backdrop-blur-xl safe-bottom md:hidden">
-      <div className="flex items-stretch justify-around h-16 px-1">
+    <nav className="fixed bottom-0 inset-x-0 z-40 bg-[#0B0E11] border-t border-[#1E2329] safe-pb md:hidden">
+      <div className="flex h-[52px]">
         {NAV.map(({ id, label, icon: Icon }) => {
-          const active = activePage === id
+          const on = activePage === id
           return (
             <button key={id} onClick={() => setActivePage(id)}
               className={clsx(
-                'relative flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors',
-                active ? 'text-accent-cyan' : 'text-text-muted'
+                'relative flex-1 flex flex-col items-center justify-center gap-0.5',
+                on ? 'text-[#F0B90B]' : 'text-[#848E9C]'
               )}>
-              <Icon size={20} strokeWidth={active ? 2.4 : 1.8} />
+              <Icon size={18} strokeWidth={on ? 2.2 : 1.7} />
               <span className="text-[10px] font-medium">{label}</span>
-              {id === 'signals' && activeSignals > 0 && (
-                <span className="absolute top-2 right-[28%] min-w-[16px] h-4 px-1 rounded-full bg-accent-cyan text-[9px] font-bold text-bg-primary flex items-center justify-center">
-                  {activeSignals}
+              {id === 'signals' && n > 0 && (
+                <span className="absolute top-1 right-[22%] min-w-[14px] h-[14px] px-0.5 rounded-full bg-[#F0B90B] text-[9px] font-bold text-[#0B0E11] flex items-center justify-center">
+                  {n}
                 </span>
               )}
-              {active && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-accent-cyan" />}
             </button>
           )
         })}
@@ -126,38 +120,27 @@ function BottomNav() {
 
 function SideNav() {
   const { activePage, setActivePage, signals } = useStore()
-  const activeSignals = (signals || []).filter(s => s.status === 'ACTIVE' && !s.executed).length
+  const n = (signals || []).filter(s => s.status === 'ACTIVE' && !s.executed).length
 
   return (
-    <aside className="hidden md:flex flex-col w-52 shrink-0 border-r border-bg-border bg-bg-secondary/40 min-h-[calc(100dvh-3.5rem)] sticky top-14">
-      <div className="p-3 space-y-1">
+    <aside className="hidden md:flex flex-col w-44 shrink-0 border-r border-[#1E2329] min-h-[calc(100dvh-3rem)] sticky top-12 bg-[#0B0E11]">
+      <div className="p-2 space-y-0.5">
         {NAV.map(({ id, label, icon: Icon }) => {
-          const active = activePage === id
+          const on = activePage === id
           return (
             <button key={id} onClick={() => setActivePage(id)}
               className={clsx(
-                'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all',
-                active
-                  ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25'
-                  : 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary border border-transparent'
+                'w-full flex items-center gap-2.5 px-3 py-2 rounded text-[13px] font-medium transition-colors',
+                on ? 'bg-[#1E2329] text-[#F0B90B]' : 'text-[#848E9C] hover:text-[#EAECEF] hover:bg-[#161A1E]'
               )}>
-              <Icon size={18} />
-              <span className="font-medium">{label}</span>
-              {id === 'signals' && activeSignals > 0 && (
-                <span className="ml-auto text-[10px] font-bold bg-accent-cyan text-bg-primary px-1.5 py-0.5 rounded-md">
-                  {activeSignals}
-                </span>
+              <Icon size={16} />
+              {label}
+              {id === 'signals' && n > 0 && (
+                <span className="ml-auto text-[10px] bg-[#F0B90B] text-[#0B0E11] font-bold px-1.5 rounded">{n}</span>
               )}
             </button>
           )
         })}
-      </div>
-      <div className="mt-auto p-4 border-t border-bg-border">
-        <div className="text-[10px] uppercase tracking-widest text-text-muted mb-1">Strategy</div>
-        <div className="text-xs text-text-secondary leading-relaxed">
-          SMA 50/200 · Body &gt; 0.789<br />
-          SL 1.5× · TP 4.5× · BE 2.0R
-        </div>
       </div>
     </aside>
   )
@@ -169,11 +152,11 @@ export default function App() {
   useLiveData()
 
   return (
-    <div className="min-h-dvh flex flex-col bg-[#070A12]">
+    <div className="min-h-dvh flex flex-col bg-[#0B0E11]">
       <TopBar />
-      <div className="flex flex-1 max-w-6xl w-full mx-auto">
+      <div className="flex flex-1 max-w-5xl w-full mx-auto">
         <SideNav />
-        <main className="flex-1 min-w-0 px-3 sm:px-5 py-4 pb-24 md:pb-6 page-enter">
+        <main className="flex-1 min-w-0 px-3 py-3 pb-[68px] md:pb-4">
           <Page />
         </main>
       </div>

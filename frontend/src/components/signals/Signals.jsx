@@ -1,116 +1,90 @@
 import React, { useState } from 'react'
-import { Radio, ArrowUpRight, ArrowDownRight, Zap, Check, X } from 'lucide-react'
 import { useStore } from '../../store'
 import { api } from '../../services/api'
 import clsx from 'clsx'
 import { formatDistanceToNow } from 'date-fns'
 
-function SignalCard({ signal }) {
+function Card({ signal }) {
   const { executionMode, dismissSignal, refreshSignals } = useStore()
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
-  const isLong = signal.direction === 'LONG'
-  const executed = signal.executed
-
-  const execute = async () => {
-    setBusy(true)
-    setMsg(null)
-    const result = await api.executeSignal(signal.id)
-    setBusy(false)
-    if (result?.success) {
-      setMsg(`Filled · qty ${result.qty}`)
-      const signals = await api.getSignals()
-      if (signals?.signals) refreshSignals(signals.signals)
-    } else {
-      setMsg(result?.reason || result?.error || 'Failed')
-    }
-  }
-
+  const long = signal.direction === 'LONG'
+  const done = signal.executed
   const age = signal.timestamp
     ? formatDistanceToNow(new Date(signal.timestamp), { addSuffix: true })
     : '—'
 
+  const run = async () => {
+    setBusy(true); setMsg(null)
+    const r = await api.executeSignal(signal.id)
+    setBusy(false)
+    if (r?.success) {
+      setMsg(`Filled · ${r.qty}`)
+      const s = await api.getSignals()
+      if (s?.signals) refreshSignals(s.signals)
+    } else setMsg(r?.reason || r?.error || 'Failed')
+  }
+
   return (
-    <div className={clsx(
-      'card p-4 transition-all',
-      executed ? 'opacity-70' : 'card-glow'
-    )}>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2.5">
-          <div className={clsx(
-            'w-10 h-10 rounded-xl flex items-center justify-center border',
-            isLong ? 'bg-accent-green/10 border-accent-green/30' : 'bg-accent-red/10 border-accent-red/30'
-          )}>
-            {isLong
-              ? <ArrowUpRight size={18} className="text-accent-green" />
-              : <ArrowDownRight size={18} className="text-accent-red" />}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-bold">{signal.symbol}</span>
-              <span className={isLong ? 'badge-long' : 'badge-short'}>{signal.direction}</span>
-            </div>
-            <div className="text-[11px] text-text-muted mt-0.5">{age} · {signal.timeframe || '1H'}</div>
-          </div>
+    <div className={clsx('card p-3', done && 'opacity-60')}>
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-semibold">{signal.symbol}</span>
+          <span className={long ? 'pill-long' : 'pill-short'}>{signal.direction}</span>
+          <span className="text-[10px] text-[#848E9C]">{signal.timeframe || '1H'}</span>
         </div>
-        {executed ? (
-          <span className="text-[10px] font-semibold px-2 py-1 rounded-md bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25">
-            EXECUTED
-          </span>
-        ) : (
-          <span className="text-[10px] font-semibold px-2 py-1 rounded-md bg-accent-green/10 text-accent-green border border-accent-green/25 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-green live-dot" /> LIVE
-          </span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {done ? (
+            <span className="text-[10px] font-semibold text-[#F0B90B]">FILLED</span>
+          ) : (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-[#0ECB81]">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0ECB81] live-dot" /> LIVE
+            </span>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-2 mb-3">
+      <div className="grid grid-cols-4 gap-1.5 mb-2.5">
         {[
           ['Entry', signal.entry],
           ['SL', signal.sl],
           ['TP', signal.tp],
-          ['BE', signal.be],
+          ['BE @', signal.be],
         ].map(([k, v]) => (
-          <div key={k} className="bg-bg-elevated/60 rounded-lg p-2 text-center">
-            <div className="text-[9px] uppercase tracking-wider text-text-muted mb-0.5">{k}</div>
-            <div className="text-xs font-semibold tabular-nums truncate">{v != null ? Number(v).toFixed(4) : '—'}</div>
+          <div key={k} className="bg-[#0B0E11] rounded px-1.5 py-1.5 text-center border border-[#1E2329]">
+            <div className="text-[9px] text-[#848E9C] uppercase">{k}</div>
+            <div className="mono text-[11px] font-medium truncate">
+              {v != null ? Number(v).toFixed(4) : '—'}
+            </div>
           </div>
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted mb-3">
-        <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border">{signal.rr || '1:3.0'}</span>
-        {signal.trend && <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border">{signal.trend}</span>}
-        {signal.entryTrigger && (
-          <span className="px-2 py-0.5 rounded-md bg-bg-elevated border border-bg-border truncate max-w-[180px]">
-            {signal.entryTrigger}
-          </span>
-        )}
+      <div className="flex flex-wrap gap-1.5 mb-2.5 text-[10px] text-[#848E9C]">
+        <span className="px-1.5 py-0.5 rounded bg-[#161A1E] border border-[#1E2329]">{signal.rr || '1:3.0'}</span>
+        {signal.trend && <span className="px-1.5 py-0.5 rounded bg-[#161A1E] border border-[#1E2329]">{signal.trend}</span>}
+        <span className="px-1.5 py-0.5 text-[#848E9C]">{age}</span>
       </div>
 
       {msg && (
-        <div className={clsx('text-xs mb-3 px-2.5 py-1.5 rounded-lg border',
-          msg.startsWith('Filled') ? 'bg-accent-green/10 border-accent-green/25 text-accent-green' : 'bg-accent-red/10 border-accent-red/25 text-accent-red'
+        <div className={clsx('text-[11px] mb-2 px-2 py-1 rounded',
+          msg.startsWith('Filled') ? 'bg-[#0ECB81]/10 text-[#0ECB81]' : 'bg-[#F6465D]/10 text-[#F6465D]'
         )}>{msg}</div>
       )}
 
-      {!executed && (
+      {!done && (
         <div className="flex gap-2">
           {(executionMode === 'SEMI-AUTO' || executionMode === 'MANUAL') && (
-            <button onClick={execute} disabled={busy}
-              className="btn-primary flex-1 flex items-center justify-center gap-1.5 disabled:opacity-50">
-              <Zap size={14} />
+            <button onClick={run} disabled={busy} className="btn-primary flex-1 disabled:opacity-50">
               {busy ? 'Sending…' : 'Execute'}
             </button>
           )}
           {executionMode === 'FULL-AUTO' && (
-            <div className="flex-1 text-center text-xs text-accent-green py-2.5 rounded-xl bg-accent-green/5 border border-accent-green/20">
-              Auto-executing…
+            <div className="flex-1 text-center text-[11px] text-[#0ECB81] py-2.5 rounded border border-[#0ECB81]/25 bg-[#0ECB81]/5">
+              Auto mode
             </div>
           )}
-          <button onClick={() => dismissSignal(signal.id)} className="btn-ghost px-3">
-            <X size={14} />
-          </button>
+          <button onClick={() => dismissSignal(signal.id)} className="btn-ghost px-3 text-[12px]">Skip</button>
         </div>
       )}
     </div>
@@ -124,33 +98,24 @@ export default function Signals() {
   const done = active.filter(s => s.executed)
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-lg font-bold">Live signals</h1>
-          <p className="text-xs text-text-muted mt-0.5">XRP/USDT · confluence engine</p>
+          <h1 className="text-[15px] font-semibold">Signals</h1>
+          <p className="text-[11px] text-[#848E9C]">XRPUSDT · SMA 50/200 · body-ratio</p>
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-text-muted">
-          <Radio size={14} className="text-accent-cyan" />
-          {pending.length} active
-        </div>
+        <span className="text-[11px] text-[#848E9C] mono">{pending.length} live</span>
       </div>
 
       {active.length === 0 ? (
-        <div className="card p-12 text-center">
-          <Radio size={28} className="mx-auto text-text-muted mb-3 opacity-50" />
-          <div className="text-sm text-text-secondary">No active signals</div>
-          <div className="text-xs text-text-muted mt-1">Scanning every 5 min on 1H close</div>
+        <div className="card py-14 text-center">
+          <div className="text-[13px] text-[#B7BDC6] mb-1">Waiting for confluence</div>
+          <div className="text-[11px] text-[#848E9C]">Engine scans on each 1H close · ~every 5 min</div>
         </div>
       ) : (
-        <div className="space-y-3">
-          {pending.map(s => <SignalCard key={s.id} signal={s} />)}
-          {done.length > 0 && (
-            <>
-              <div className="text-[10px] uppercase tracking-widest text-text-muted pt-2">Executed</div>
-              {done.map(s => <SignalCard key={s.id} signal={s} />)}
-            </>
-          )}
+        <div className="space-y-2">
+          {pending.map(s => <Card key={s.id} signal={s} />)}
+          {done.map(s => <Card key={s.id} signal={s} />)}
         </div>
       )}
     </div>
