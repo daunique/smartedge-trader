@@ -23,21 +23,28 @@ def calc_position_size(
     min_qty: float = 0.001,
     qty_step: float = 0.001,
     max_leverage: float = 10.0,
+    available=None,
 ) -> float:
-    """Risk-based position sizing, leverage-capped exactly like the backtest:
-    qty is normally risk_amount / stop_distance, but if that stop distance is
-    small enough to imply more than max_leverage, the position is capped at
-    max_leverage*balance notional instead -- actual risk taken drops below
-    risk_pct on those trades rather than leverage climbing unbounded."""
-    risk_amount   = balance * (risk_pct / 100)
+    """Risk-based sizing, leverage-capped, with margin headroom.
+
+    Uses available balance for the leverage cap (not total equity) so we do
+    not request more margin than Bybit will accept. A 15% buffer avoids
+    'ab not enough for new order' from fees / rounding / locked funds.
+    """
+    equity = max(balance, 0.0)
+    avail = equity if available is None else max(float(available), 0.0)
+    # Cap margin usage at 85% of what available balance can support at max lev
+    margin_budget = avail * 0.85
+    risk_amount = equity * (risk_pct / 100)
     risk_per_unit = abs(entry - sl)
-    if risk_per_unit == 0 or entry == 0:
+    if risk_per_unit <= 0 or entry <= 0:
         return min_qty
-    raw_qty     = risk_amount / risk_per_unit
-    max_qty_lev = (balance * max_leverage) / entry
+    raw_qty = risk_amount / risk_per_unit
+    max_qty_lev = (margin_budget * max_leverage) / entry if entry > 0 else min_qty
     qty = min(raw_qty, max_qty_lev)
-    # Round down to qty_step
-    qty = max(min_qty, (qty // qty_step) * qty_step)
+    if qty_step > 0:
+        qty = (qty // qty_step) * qty_step
+    qty = max(min_qty, qty)
     return round(qty, 6)
 
 # ── Min qty per symbol (only the two validated pairs) ─────────────
@@ -52,36 +59,51 @@ class SafetyCheck:
     trades_today:   int = 0
     daily_loss_pct: float = 0.0
     balance:        float = 0.0
+    available:      float = 0.0
 
 async def run_safety_checks(settings: dict, trades_today: int, daily_loss: float) -> SafetyCheck:
     """All checks must pass before executing any trade"""
-
-    # 1. Fetch balance
     try:
-        data    = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
-        lst     = data["result"]["list"]
-        acc     = lst[0] if lst else {}
+        data = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+        if data.get("retCode") != 0:
+            return SafetyCheck(False, f"Cannot fetch balance: {data.get('retMsg')}")
+        lst = data.get("result", {}).get("list") or []
+        acc = lst[0] if lst else {}
         balance = float(acc.get("totalEquity") or 0)
+        # Prefer totalAvailableBalance; fall back to coin USDT availableToWithdraw / walletBalance
+        available = float(acc.get("totalAvailableBalance") or 0)
+        if available <= 0:
+            for coin in acc.get("coin") or []:
+                if coin.get("coin") == "USDT":
+                    available = float(
+                        coin.get("availableToWithdraw")
+                        or coin.get("walletBalance")
+                        or coin.get("equity")
+                        or 0
+                    )
+                    break
+        if available <= 0:
+            available = balance
     except Exception as e:
         return SafetyCheck(False, f"Cannot fetch balance: {e}")
 
     if balance <= 0:
         return SafetyCheck(False, "Zero balance")
+    if available <= 0:
+        return SafetyCheck(False, f"No available margin (equity={balance:.2f}, available=0)")
 
-    # 2. Daily loss limit
     loss_pct = (daily_loss / balance * 100) if balance > 0 else 0
     if loss_pct >= settings.get("dailyLossLimit", 2):
         return SafetyCheck(False,
             f"Daily loss limit hit ({loss_pct:.1f}% >= {settings['dailyLossLimit']}%)",
-            trades_today, loss_pct, balance)
+            trades_today, loss_pct, balance, available)
 
-    # 3. Max trades per day
     if trades_today >= settings.get("maxTradesPerDay", 3):
         return SafetyCheck(False,
             f"Max trades hit ({trades_today}/{settings['maxTradesPerDay']})",
-            trades_today, loss_pct, balance)
+            trades_today, loss_pct, balance, available)
 
-    return SafetyCheck(True, "All checks passed", trades_today, loss_pct, balance)
+    return SafetyCheck(True, "All checks passed", trades_today, loss_pct, balance, available)
 
 # ── Order executor ────────────────────────────────────────────────
 RISK_PER_TRADE_PCT = {"XRPUSDT": 10.0}
@@ -113,6 +135,8 @@ class AutoExecutor:
         # has already pulled back by the time the next poll runs.
         self.peak_favorable = {}
         self._orig_risk = {}
+        # signal_id -> unix ts of last hard failure (margin etc.) — skip retries for 10 min
+        self.failed_ids = {}
 
     def set_broadcast(self, cb): self.broadcast_cb = cb
     def set_mode(self, mode):    self.mode = mode
@@ -147,6 +171,12 @@ class AutoExecutor:
 
         if self.paused:
             return {"success": False, "reason": "System paused"}
+
+        # Cooldown after margin / hard failures — stop hammering the same signal
+        import time as _time
+        fail_ts = self.failed_ids.get(sig_id)
+        if fail_ts and (_time.time() - fail_ts) < 600:
+            return {"success": False, "reason": "Cooldown for this signal (margin/order failure cooldown)"}
 
         # Sync actual fill count AND realized daily loss from Bybit before
         # checking limits -- both were previously either wrong or never
@@ -203,15 +233,16 @@ class AutoExecutor:
                                   f"matching backtest behavior, new signals for a pair "
                                   f"aren't acted on until the current trade closes"}
 
-        # Position size — risk % is per-symbol (XRP 10%).
-        # Defensive against riskPerTrade being a stale flat number (shouldn't happen
-        # post-update_settings-fix, but a currently-running instance may still be
-        # holding one in memory from before a redeploy) rather than crashing execution.
         rpt = self.settings["riskPerTrade"]
         if isinstance(rpt, dict):
             risk_pct = rpt.get(symbol_raw, RISK_PER_TRADE_PCT.get(symbol_raw, 1.0))
         else:
             risk_pct = float(rpt) if isinstance(rpt, (int, float)) else RISK_PER_TRADE_PCT.get(symbol_raw, 1.0)
+
+        lev = MAX_LEVERAGE.get(symbol_raw, 10.0)
+        # Set leverage BEFORE sizing so exchange margin math matches our cap
+        await self._ensure_leverage(symbol_raw, lev)
+
         qty = calc_position_size(
             balance      = check.balance,
             risk_pct     = risk_pct,
@@ -219,24 +250,16 @@ class AutoExecutor:
             sl           = sl,
             min_qty      = MIN_QTY.get(symbol_raw, 0.01),
             qty_step     = QTY_STEP.get(symbol_raw, 0.01),
-            max_leverage = MAX_LEVERAGE.get(symbol_raw, 10.0),
+            max_leverage = lev,
+            available    = check.available,
         )
-
+        notional = qty * entry
+        margin_est = notional / lev if lev else notional
         print(f"[EXECUTOR] Placing {direction} {symbol_raw} "
               f"qty={qty} entry={entry} tp={tp} sl={sl} "
-              f"risk={risk_pct}% RR=1:{rr:.1f}")
-
-        # calc_position_size above assumes up to max_leverage is available on
-        # the exchange, but Bybit leverage is a persistent per-symbol account
-        # setting, not something passed per-order -- if the account was ever
-        # left at Bybit's default (often 1x for a symbol never explicitly
-        # configured), a position sized assuming e.g. 7.6x needs the FULL
-        # notional in margin at 1x, not the fraction the sizing math assumed.
-        # That's what "ab not enough for new order" (Bybit's insufficient-
-        # margin error, "ab" = available balance) actually was here -- not
-        # an empty account, a leverage mismatch. Set it explicitly every
-        # time; safe to call even when already at that value.
-        await self._ensure_leverage(symbol_raw, MAX_LEVERAGE.get(symbol_raw, 10.0))
+              f"risk={risk_pct}% RR=1:{rr:.1f} lev={lev}x "
+              f"equity={check.balance:.2f} avail={check.available:.2f} "
+              f"margin≈{margin_est:.2f}")
 
         # Place order. Bybit's actual error on the last deploy was explicit:
         # "tpOrderType can not have a value when tpSlMode is empty" -- so
@@ -300,6 +323,32 @@ class AutoExecutor:
             else:
                 err = result.get("retMsg", "Unknown error")
                 print(f"[EXECUTOR] ❌ Order failed: {err}")
+                # One automatic downsize retry on insufficient margin
+                if "not enough" in err.lower() or "ab not enough" in err.lower():
+                    step = QTY_STEP.get(symbol_raw, 0.01)
+                    retry_qty = max(MIN_QTY.get(symbol_raw, 0.01), (qty * 0.6 // step) * step)
+                    if retry_qty < qty and retry_qty > 0:
+                        print(f"[EXECUTOR] Retrying with reduced qty {retry_qty} (was {qty})")
+                        body["qty"] = str(retry_qty)
+                        result2 = await bybit_post("/v5/order/create", body)
+                        if result2.get("retCode") == 0:
+                            self.executed_ids.add(sig_id)
+                            self.failed_ids.pop(sig_id, None)
+                            self.trades_today += 1
+                            order_id = result2["result"].get("orderId")
+                            await asyncio.sleep(1.5)
+                            await self._verify_and_protect(symbol_raw, sl, tp)
+                            print(f"[EXECUTOR] ✅ Order placed on retry: {order_id}")
+                            return {
+                                "success": True, "order_id": order_id,
+                                "symbol": signal["symbol"], "direction": direction,
+                                "qty": retry_qty, "entry": entry, "tp": tp, "sl": sl,
+                                "rr": f"1:{rr:.1f}", "retried": True,
+                            }
+                        err = result2.get("retMsg", err)
+                        print(f"[EXECUTOR] ❌ Retry also failed: {err}")
+                    import time as _time
+                    self.failed_ids[sig_id] = _time.time()
                 return {"success": False, "reason": err, "raw": result}
 
         except Exception as e:
