@@ -53,12 +53,18 @@ function TopBar() {
 
         <div className="flex items-baseline gap-1.5 min-w-0">
           <span className="text-[10px] text-[#848E9C] font-medium">XRP</span>
-          <span className="mono text-[13px] font-semibold text-[#EAECEF]">
+          <span className="mono text-[13px] font-semibold text-[#EAECEF] tabular-nums">
             {price != null && Number(price) > 0 ? Number(price).toFixed(4) : '—'}
           </span>
           {change != null && !isNaN(Number(change)) && (
             <span className={clsx('mono text-[11px] font-medium', Number(change) >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]')}>
               {Number(change) >= 0 ? '+' : ''}{Number(change).toFixed(2)}%
+            </span>
+          )}
+          {price != null && Number(price) > 0 && (
+            <span className="flex items-center gap-1 text-[9px] text-[#0ECB81] font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0ECB81] live-dot" />
+              LIVE
             </span>
           )}
         </div>

@@ -12,8 +12,9 @@ const normalizeSignal = (s) => ({
   id: s.id, symbol: s.symbol, direction: s.direction,
   entry: s.entry, tp: s.tp, sl: s.sl, be: s.be,
   rr: s.rr, status: s.status, timeframe: s.timeframe, market: s.market,
-  trend: s.trend, entryTrigger: s.entry_trigger, volOk: s.vol_ok,
+  trend: s.trend, entryTrigger: s.entry_trigger || s.entryTrigger, volOk: s.vol_ok,
   atr: s.atr, executed: s.executed,
+  lastError: s.last_error || s.lastError || '',
   timestamp: new Date(s.timestamp).getTime(),
 })
 
@@ -123,7 +124,7 @@ export function useLiveData() {
     })
 
     pollRef.current = setInterval(loadAll, POLL_INTERVAL)
-    priceRef.current = setInterval(loadPrices, 5000)
+    priceRef.current = setInterval(loadPrices, 2000)
 
     wsService.connect({
       onOpen: () => setWsConnected(true),
@@ -134,7 +135,11 @@ export function useLiveData() {
           refreshSignals(msg.signals.map(normalizeSignal))
         }
         if (msg.type === 'trade_executed' || msg.type === 'auto_executed') loadAll()
+        if (msg.type === 'execute_error') loadAll()
         if (msg.type === 'position_update' && msg.positions) refreshPositions(msg.positions)
+        if (msg.type === 'signal_update' && msg.signals) {
+          refreshSignals(msg.signals.map(normalizeSignal))
+        }
       },
     })
 

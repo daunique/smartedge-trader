@@ -58,11 +58,22 @@ async def full_auto_watcher():
                         result = await auto_executor.execute_signal(sig)
                         if result.get("success"):
                             signal_engine.mark_executed(sig["id"])
+                            signal_engine.clear_error(sig["id"])
                             await manager.broadcast({
                                 "type": "auto_executed",
                                 "result": result,
                                 "timestamp": datetime.utcnow().isoformat(),
                             })
+                        else:
+                            err = result.get("reason") or result.get("error") or "Order failed"
+                            signal_engine.set_error(sig["id"], err)
+                            await manager.broadcast({
+                                "type": "execute_error",
+                                "signal_id": sig["id"],
+                                "error": err,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
+                            print(f"[AUTO] Execute failed: {err}")
         except Exception as e:
             print(f"[AUTO] Error: {e}")
         await asyncio.sleep(30)
@@ -90,15 +101,26 @@ async def daily_reset():
 # genuinely matters (open positions, live capital), Render's own guidance is
 # that a paid instance -- which doesn't spin down at all -- is the reliable
 # fix; this keep-alive is the free-tier best-effort version of that.
-KEEPALIVE_INTERVAL_S = 600  # 10 min -- 5 min of margin under the 15 min limit
-SELF_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("SELF_URL")
+KEEPALIVE_INTERVAL_S = 600  # 10 min — useful on hosts that idle-sleep free tiers
+def _self_url() -> str:
+    # Prefer explicit override, then Render, then Fly app hostname
+    for key in ("SELF_URL", "RENDER_EXTERNAL_URL"):
+        v = os.getenv(key)
+        if v:
+            return v.rstrip("/")
+    fly_app = os.getenv("FLY_APP_NAME")
+    if fly_app:
+        return f"https://{fly_app}.fly.dev"
+    return ""
+
+SELF_URL = _self_url()
 
 async def keepalive_ping():
     if not SELF_URL:
-        print("[KEEPALIVE] No RENDER_EXTERNAL_URL/SELF_URL set -- skipping "
-              "(expected when running locally; set SELF_URL to test)")
+        print("[KEEPALIVE] No SELF_URL/RENDER_EXTERNAL_URL/FLY_APP_NAME -- skipping "
+              "(ok on always-on Fly with min_machines_running=1)")
         return
-    url = f"{SELF_URL.rstrip('/')}/health"
+    url = f"{SELF_URL}/health"
     print(f"[KEEPALIVE] Pinging {url} every {KEEPALIVE_INTERVAL_S}s")
     async with httpx.AsyncClient(timeout=15) as client:
         while True:
@@ -167,6 +189,8 @@ async def get_portfolio():
         trades_today_count = 0
         if orders_data.get("retCode") == 0:
             for o in orders_data["result"].get("list", []):
+                if o.get("symbol") != "XRPUSDT":
+                    continue
                 created = o.get("createdTime") or "0"
                 if is_today_utc(created) and o.get("orderStatus") in ("Filled", "PartiallyFilled") and is_closing_order(o):
                     trades_today_count += 1
@@ -199,6 +223,8 @@ async def get_positions():
         if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
         positions = []
         for p in data["result"].get("list", []):
+            if p.get("symbol") != "XRPUSDT":
+                continue
             size = float(p.get("size") or 0)
             if size == 0: continue
             entry   = float(p.get("avgPrice")      or 0)
@@ -255,6 +281,8 @@ async def get_history(limit: int = 100, offset: int = 0):
         # Process oldest first for running PnL
         orders  = list(reversed(data["result"].get("list", [])))
         for o in orders:
+            if o.get("symbol") != "XRPUSDT":
+                continue
             if o.get("orderStatus") not in ("Filled", "PartiallyFilled"):
                 continue
             if not is_closing_order(o):
@@ -322,10 +350,16 @@ async def set_pause(state: str):
 async def execute_signal(signal_id: str):
     sig = next((s for s in signal_engine.signals if s.id == signal_id), None)
     if not sig:
-        return {"success": False, "error": "Signal not found"}
+        return {"success": False, "error": "Signal not found", "reason": "Signal not found"}
     result = await auto_executor.execute_signal(asdict(sig))
     if result.get("success"):
         signal_engine.mark_executed(signal_id)
+        signal_engine.clear_error(signal_id)
+    else:
+        err = result.get("reason") or result.get("error") or "Order failed"
+        signal_engine.set_error(signal_id, err)
+        result.setdefault("error", err)
+        result.setdefault("reason", err)
     return result
 
 @app.post("/api/positions/{position_id}/close")
@@ -391,6 +425,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 positions = []
                 if data.get("retCode") == 0:
                     for p in data["result"].get("list", []):
+                        if p.get("symbol") != "XRPUSDT":
+                            continue
                         size = float(p.get("size") or 0)
                         if size == 0: continue
                         entry = float(p.get("avgPrice") or 0)

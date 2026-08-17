@@ -54,6 +54,7 @@ class Signal:
     timestamp: str
     expires_at: str
     executed: bool = False
+    last_error: str = ""
 
 
 async def fetch_candles(symbol: str, interval: str = "60", limit: int = 1000) -> list[dict]:
@@ -227,6 +228,21 @@ class SignalEngine:
         for s in self.signals:
             if s.id == signal_id:
                 s.executed = True
+                s.last_error = ""
+                return True
+        return False
+
+    def set_error(self, signal_id: str, message: str):
+        for s in self.signals:
+            if s.id == signal_id:
+                s.last_error = (message or "")[:240]
+                return True
+        return False
+
+    def clear_error(self, signal_id: str):
+        for s in self.signals:
+            if s.id == signal_id:
+                s.last_error = ""
                 return True
         return False
 

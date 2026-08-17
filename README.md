@@ -126,3 +126,73 @@ comments for the specifics of each):
   on any failure, and verifies the SL actually changed after a BE move
   instead of trusting a success response alone. BE-monitor interval also
   tightened from 30s to 10s.
+
+---
+
+## Deploy on Fly.io
+
+Two apps: **API** (FastAPI, always on) and **Web** (static nginx).
+
+### Prerequisites
+
+```bash
+# https://fly.io/docs/hands-on/install-flyctl/
+fly auth login
+```
+
+### 1. Backend
+
+```bash
+cd backend
+
+# Create app (once) — pick a unique name
+fly apps create smartedge-api
+
+# Secrets (Bybit demo or live keys)
+fly secrets set \
+  BYBIT_API_KEY="your_key" \
+  BYBIT_API_SECRET="your_secret" \
+  ACCOUNT_MODE="DEMO" \
+  BYBIT_TESTNET="true" \
+  SELF_URL="https://smartedge-api.fly.dev"
+
+fly deploy
+```
+
+- `min_machines_running = 1` and `auto_stop_machines = "off"` keep the BE monitor and signal scanner running 24/7.
+- Health check: `GET /health`
+
+### 2. Frontend
+
+```bash
+cd frontend
+
+fly apps create smartedge-web
+
+# Build-arg must point at your API URL
+fly deploy --build-arg VITE_API_URL=https://smartedge-api.fly.dev
+```
+
+### One-shot script
+
+```bash
+export BYBIT_API_KEY=...
+export BYBIT_API_SECRET=...
+./fly-deploy.sh
+```
+
+Optional: `API_APP=my-api WEB_APP=my-web REGION=iad ./fly-deploy.sh`
+
+### URLs
+
+| Service | Example |
+|---------|---------|
+| API | `https://smartedge-api.fly.dev` |
+| Web | `https://smartedge-web.fly.dev` |
+| Health | `https://smartedge-api.fly.dev/health` |
+
+### Notes
+
+- Frontend bakes `VITE_API_URL` at **build** time — redeploy web if the API hostname changes.
+- Scale API memory if needed: `fly scale memory 1024 -a smartedge-api`
+- Logs: `fly logs -a smartedge-api`

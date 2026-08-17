@@ -1,0 +1,35 @@
+# SmartEdge Web — Fly.io
+# Deploy from frontend/:
+#   fly deploy --build-arg VITE_API_URL=https://smartedge-api.fly.dev
+#
+# Replace app name / API URL with your own after fly apps create.
+
+app = "smartedge-web"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+  [build.args]
+    # Override at deploy time:
+    # fly deploy --build-arg VITE_API_URL=https://YOUR-API.fly.dev
+    VITE_API_URL = "https://smartedge-api.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1

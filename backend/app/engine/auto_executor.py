@@ -403,11 +403,12 @@ class AutoExecutor:
             result = await bybit_post("/v5/position/trading-stop", {
                 "category":    "linear",
                 "symbol":      symbol_raw,
+                "tpslMode":    "Full",
                 "stopLoss":    str(round(intended_sl, 6)),
                 "takeProfit":  str(round(intended_tp, 6)),
                 "slTriggerBy": "MarkPrice",
                 "tpTriggerBy": "MarkPrice",
-                "positionIdx": pos_idx,
+                "positionIdx": int(pos_idx),
             })
             if result.get("retCode") == 0:
                 print(f"[EXECUTOR] SL set as fallback for {symbol_raw}: {intended_sl}")
@@ -442,8 +443,9 @@ class AutoExecutor:
             sl = current - SL_ATR_MULT * atr if pos["direction"] == "LONG" else current + SL_ATR_MULT * atr
             result = await bybit_post("/v5/position/trading-stop", {
                 "category": "linear", "symbol": symbol_raw,
+                "tpslMode": "Full",
                 "stopLoss": str(round(sl, 6)), "slTriggerBy": "MarkPrice",
-                "positionIdx": pos_idx,
+                "positionIdx": int(pos_idx),
             })
             if result.get("retCode") == 0:
                 print(f"[EXECUTOR] Emergency SL set for {symbol_raw}: {sl}")
@@ -500,11 +502,12 @@ class AutoExecutor:
             print(f"[EXECUTOR] Moving SL to BE for {symbol_raw} (peak rr={rr_achieved:.2f} >= {be_trigger}, positionIdx={pos_idx})")
             try:
                 result = await bybit_post("/v5/position/trading-stop", {
-                    "category":  "linear",
-                    "symbol":    symbol_raw,
-                    "stopLoss":  str(round(be_price, 6)),
+                    "category":    "linear",
+                    "symbol":      symbol_raw,
+                    "tpslMode":    "Full",
+                    "stopLoss":    str(round(be_price, 6)),
                     "slTriggerBy": "MarkPrice",
-                    "positionIdx": pos_idx,
+                    "positionIdx": int(pos_idx),
                 })
                 if result.get("retCode") != 0:
                     print(f"[EXECUTOR] ❌ BE move FAILED for {symbol_raw}: "

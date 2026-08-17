@@ -21,8 +21,26 @@ function Card({ signal }) {
     if (r?.success) {
       setMsg(`Filled · ${r.qty}`)
       const s = await api.getSignals()
-      if (s?.signals) refreshSignals(s.signals)
-    } else setMsg(r?.reason || r?.error || 'Failed')
+      if (s?.signals) refreshSignals(s.signals.map(x => ({
+        ...x,
+        entryTrigger: x.entry_trigger || x.entryTrigger,
+        lastError: x.last_error || x.lastError || '',
+        timestamp: new Date(x.timestamp).getTime(),
+      })))
+    } else {
+      setMsg(r?.reason || r?.error || 'Order failed')
+      // refresh so last_error from backend sticks on the card
+      const s = await api.getSignals()
+      if (s?.signals) refreshSignals(s.signals.map(x => ({
+        id: x.id, symbol: x.symbol, direction: x.direction,
+        entry: x.entry, tp: x.tp, sl: x.sl, be: x.be,
+        rr: x.rr, status: x.status, timeframe: x.timeframe, market: x.market,
+        trend: x.trend, entryTrigger: x.entry_trigger, volOk: x.vol_ok,
+        atr: x.atr, executed: x.executed,
+        lastError: x.last_error || x.lastError || r?.reason || r?.error || '',
+        timestamp: new Date(x.timestamp).getTime(),
+      })))
+    }
   }
 
   return (
@@ -66,10 +84,12 @@ function Card({ signal }) {
         <span className="px-1.5 py-0.5 text-[#848E9C]">{age}</span>
       </div>
 
-      {msg && (
-        <div className={clsx('text-[11px] mb-2 px-2 py-1 rounded',
-          msg.startsWith('Filled') ? 'bg-[#0ECB81]/10 text-[#0ECB81]' : 'bg-[#F6465D]/10 text-[#F6465D]'
-        )}>{msg}</div>
+      {(msg || signal.lastError) && (
+        <div className={clsx('text-[11px] mb-2 px-2 py-1 rounded break-words',
+          (msg || '').startsWith('Filled')
+            ? 'bg-[#0ECB81]/10 text-[#0ECB81]'
+            : 'bg-[#F6465D]/10 text-[#F6465D]'
+        )}>{msg || signal.lastError}</div>
       )}
 
       {!done && (
