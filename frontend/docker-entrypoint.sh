@@ -1,10 +1,27 @@
 #!/bin/sh
-set -e
-# Replace BACKEND_UPSTREAM placeholder with runtime BACKEND_URL (no trailing slash)
-BACKEND="${BACKEND_URL:-https://smartedge-api.fly.dev}"
-BACKEND=$(echo "$BACKEND" | sed 's:/*$::')
-sed "s|BACKEND_UPSTREAM|${BACKEND}|g" /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
-# Ensure listen port
-sed -i "s/listen 8080/listen ${PORT:-8080}/" /etc/nginx/conf.d/default.conf
-echo "[smartedge-web] proxying /api /ws /health → ${BACKEND}"
-exec nginx -g 'daemon off;'
+set -eu
+
+export BACKEND_URL="${BACKEND_URL:-https://smartedge-api.fly.dev}"
+# strip trailing slash
+BACKEND_URL="$(echo "$BACKEND_URL" | sed 's:/*$::')"
+export BACKEND_URL
+
+echo "[smartedge-web] BACKEND_URL=${BACKEND_URL}"
+echo "[smartedge-web] binding 0.0.0.0:8080"
+
+TEMPLATE="/etc/nginx/nginx.conf.template"
+TARGET="/etc/nginx/conf.d/default.conf"
+
+if [ -f "$TEMPLATE" ]; then
+  # Only substitute BACKEND_URL; leave nginx $vars alone
+  envsubst '${BACKEND_URL}' < "$TEMPLATE" > "$TARGET"
+  echo "[smartedge-web] wrote proxy config"
+else
+  echo "[smartedge-web] WARNING: template missing, using static conf"
+fi
+
+# Validate config before start
+nginx -t
+
+echo "[smartedge-web] starting nginx"
+exec nginx -g "daemon off;"
