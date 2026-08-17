@@ -1,94 +1,154 @@
 """
-SmartEdge Trader — shared Bybit demo-API client.
-
-Previously this signing/request logic was duplicated independently in both
-main.py and auto_executor.py (~50 lines each). Two independent copies of the
-same logic is exactly the failure pattern that caused the settings-drift and
-walk-forward-comment issues found earlier in this codebase -- one file gets
-fixed or changed and the other silently doesn't. Consolidated here; both
-modules import from this one instead.
+SmartEdge Trader — Bybit REST client (demo / testnet / mainnet).
 """
 
-import os, json, hmac, hashlib, time
+from __future__ import annotations
+
+import os
+import json
+import hmac
+import hashlib
+import time
 import httpx
 from datetime import datetime
 
-DEMO_BASE = "https://api-demo.bybit.com"
 
-# Read fresh on every call, not cached at import time -- a Bybit key
-# rotation in Render's environment must take effect without a full
-# process restart, and importing this module before env injection
-# completes must not permanently cache an empty value.
 def get_api_key() -> str:
-    return os.getenv("BYBIT_API_KEY", "")
+    return (os.getenv("BYBIT_API_KEY") or "").strip()
+
 
 def get_api_secret() -> str:
-    return os.getenv("BYBIT_API_SECRET", "")
+    return (os.getenv("BYBIT_API_SECRET") or "").strip()
+
+
+def get_base() -> str:
+    """
+    Resolve REST host:
+      BYBIT_BASE          — explicit override (full origin, no trailing slash)
+      ACCOUNT_MODE=DEMO   — api-demo.bybit.com  (Bybit Demo Trading)
+      BYBIT_TESTNET=true  — api-testnet.bybit.com
+      else                — api.bybit.com (live)
+    """
+    explicit = (os.getenv("BYBIT_BASE") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    mode = (os.getenv("ACCOUNT_MODE") or "DEMO").strip().upper()
+    if mode == "DEMO":
+        return "https://api-demo.bybit.com"
+    testnet = (os.getenv("BYBIT_TESTNET") or "true").strip().lower() in ("1", "true", "yes")
+    if testnet:
+        return "https://api-testnet.bybit.com"
+    return "https://api.bybit.com"
+
+
+# Back-compat name used by main.py health payload
+DEMO_BASE = "https://api-demo.bybit.com"
+
 
 def _sign(param_str: str) -> str:
     return hmac.new(get_api_secret().encode(), param_str.encode(), hashlib.sha256).hexdigest()
 
+
+def _parse_response(r: httpx.Response, path: str) -> dict:
+    text = (r.text or "").strip()
+    if not text:
+        return {
+            "retCode": -1,
+            "retMsg": f"empty body HTTP {r.status_code} for {path}",
+            "result": {},
+        }
+    try:
+        data = r.json()
+        if not isinstance(data, dict):
+            return {"retCode": -1, "retMsg": f"non-object JSON from {path}", "result": {}}
+        return data
+    except Exception as e:
+        snippet = text[:240].replace("\n", " ")
+        print(f"[BYBIT] JSON parse fail {path} HTTP {r.status_code}: {e} | body={snippet!r}")
+        return {
+            "retCode": -1,
+            "retMsg": f"invalid JSON HTTP {r.status_code}: {snippet[:120]}",
+            "result": {},
+        }
+
+
 async def bybit_get(path: str, params: dict = None) -> dict:
     params = params or {}
-    api_key     = get_api_key()
-    ts          = str(int(time.time() * 1000))
+    api_key = get_api_key()
+    if not api_key:
+        return {"retCode": -1, "retMsg": "BYBIT_API_KEY not set", "result": {}}
+    base = get_base()
+    ts = str(int(time.time() * 1000))
     recv_window = "20000"
-    param_str   = ts + api_key + recv_window + "&".join(
+    param_str = ts + api_key + recv_window + "&".join(
         f"{k}={v}" for k, v in sorted(params.items())
     )
     headers = {
-        "X-BAPI-API-KEY": api_key, "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-SIGN": _sign(param_str), "X-BAPI-RECV-WINDOW": recv_window,
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-SIGN": _sign(param_str),
+        "X-BAPI-RECV-WINDOW": recv_window,
     }
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{DEMO_BASE}{path}", params=params, headers=headers)
-        return r.json()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"{base}{path}", params=params, headers=headers)
+            data = _parse_response(r, path)
+            if data.get("retCode") not in (0, None) and data.get("retCode") != 0:
+                # Log auth/config mistakes once clearly
+                if data.get("retCode") in (10003, 10004, 10005, 33004, -1):
+                    print(f"[BYBIT] GET {path} retCode={data.get('retCode')} retMsg={data.get('retMsg')} base={base}")
+            return data
+    except Exception as e:
+        print(f"[BYBIT] GET {path} network error: {e}")
+        return {"retCode": -1, "retMsg": str(e), "result": {}}
+
 
 async def bybit_post(path: str, body: dict = None) -> dict:
-    body        = body or {}
-    api_key     = get_api_key()
-    ts          = str(int(time.time() * 1000))
+    body = body or {}
+    api_key = get_api_key()
+    if not api_key:
+        return {"retCode": -1, "retMsg": "BYBIT_API_KEY not set", "result": {}}
+    base = get_base()
+    ts = str(int(time.time() * 1000))
     recv_window = "20000"
-    body_str    = json.dumps(body)
-    param_str   = ts + api_key + recv_window + body_str
+    body_str = json.dumps(body)
+    param_str = ts + api_key + recv_window + body_str
     headers = {
-        "X-BAPI-API-KEY": api_key, "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-SIGN": _sign(param_str), "X-BAPI-RECV-WINDOW": recv_window,
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-SIGN": _sign(param_str),
+        "X-BAPI-RECV-WINDOW": recv_window,
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(f"{DEMO_BASE}{path}", content=body_str, headers=headers)
-        return r.json()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{base}{path}", content=body_str, headers=headers)
+            data = _parse_response(r, path)
+            if data.get("retCode") != 0:
+                print(f"[BYBIT] POST {path} retCode={data.get('retCode')} retMsg={data.get('retMsg')} base={base}")
+            return data
+    except Exception as e:
+        print(f"[BYBIT] POST {path} network error: {e}")
+        return {"retCode": -1, "retMsg": str(e), "result": {}}
+
 
 def get_order_pnl(o: dict) -> float:
-    """Realized P&L for a Bybit order: closedPnl when available, else -fees."""
     closed = o.get("closedPnl")
     if closed and float(closed) != 0:
         return round(float(closed), 4)
     cum_fee = float(o.get("cumExecFee") or 0)
     return round(-cum_fee, 4)
 
+
 def is_closing_order(o: dict) -> bool:
-    """True only for the order that actually closed a position (TP/SL fill,
-    or an explicit reduce-only close) -- NOT the entry order that opened it.
-    Every entry order also appears in order history with closedPnl==0 (opening
-    a position realizes no P&L), which made get_order_pnl's fee-only fallback
-    treat every single entry as its own small phantom loss -- inflating trade
-    counts, corrupting daily P&L (can flip its sign on a day with few trades),
-    and breaking streak counts (a real win/win/win reads as loss/win/loss/win/
-    loss/win once each entry order interleaves a fake 'SL' between the real
-    results). reduceOnly is set correctly on our own closing orders (see
-    close_position, _verify_and_protect) and Bybit echoes it back in history."""
     return bool(o.get("reduceOnly"))
 
+
 def get_order_rr(o: dict) -> float:
-    """Actual R:R achieved on a filled order, from its own fill/TP/SL prices
-    -- not assumed from strategy defaults, so it stays correct even if the
-    strategy's multiples change later."""
     try:
         entry = float(o.get("avgPrice") or 0)
-        tp    = float(o.get("takeProfit") or 0)
-        sl    = float(o.get("stopLoss") or 0)
+        tp = float(o.get("takeProfit") or 0)
+        sl = float(o.get("stopLoss") or 0)
         if not (entry and tp and sl):
             return 0.0
         risk = abs(entry - sl)
@@ -96,11 +156,13 @@ def get_order_rr(o: dict) -> float:
     except (TypeError, ValueError):
         return 0.0
 
+
 def ts_to_iso(ts_str) -> str:
     try:
         return datetime.utcfromtimestamp(int(ts_str) / 1000).isoformat() + "Z"
     except (TypeError, ValueError):
         return datetime.utcnow().isoformat() + "Z"
+
 
 def is_today_utc(ts_str) -> bool:
     try:

@@ -18,7 +18,7 @@ from app.engine.signal_engine import signal_engine
 from app.engine.auto_executor import auto_executor
 from app import db
 from app.bybit_client import (
-    DEMO_BASE, get_api_key, bybit_get, bybit_post,
+    DEMO_BASE, get_base, get_api_key, bybit_get, bybit_post,
     get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc,
 )
 from dataclasses import asdict
@@ -201,7 +201,7 @@ async def health():
         "execution_mode": auto_executor.mode,
         "paused": auto_executor.paused,
         "api_key_set": bool(get_api_key()),
-        "endpoint": DEMO_BASE,
+        "endpoint": get_base(),
         "account_mode": os.getenv("ACCOUNT_MODE", "DEMO"),
         "equity": equity,
         "available": available,
