@@ -137,6 +137,10 @@ class AutoExecutor:
         self._orig_risk = {}
         # signal_id -> unix ts of last hard failure (margin etc.) — skip retries for 10 min
         self.failed_ids = {}
+        self.last_be_check_at = None
+        self.last_be_move_at = None
+        self.last_be_symbol = None
+        self.last_order = None  # {ok, symbol, msg, at, order_id}
 
     def set_broadcast(self, cb): self.broadcast_cb = cb
     def set_mode(self, mode):    self.mode = mode
@@ -266,6 +270,8 @@ class AutoExecutor:
         # tpOrderType/slOrderType require tpslMode to be set, which was the
         # missing piece, not a guess this time. "Full" = TP/SL applies to
         # the whole position (we never split TP/SL across partial size).
+        # orderLinkId ties the exchange order to our signal id (max 36 chars on Bybit)
+        link_id = str(sig_id).replace("-", "")[:36]
         body = {
             "category":    "linear",
             "symbol":      symbol_raw,
@@ -280,6 +286,7 @@ class AutoExecutor:
             "tpOrderType": "Market",
             "slOrderType": "Market",
             "timeInForce": "IOC",
+            "orderLinkId": link_id,
         }
 
         try:
@@ -288,7 +295,12 @@ class AutoExecutor:
                 self.executed_ids.add(sig_id)
                 self.trades_today += 1
                 order_id = result["result"].get("orderId")
-                print(f"[EXECUTOR] ✅ Order placed: {order_id}")
+                print(f"[EXECUTOR] ✅ Order placed: {order_id} link={link_id}")
+                self.last_order = {
+                    "ok": True, "symbol": symbol_raw, "order_id": order_id,
+                    "order_link_id": link_id, "msg": "filled",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
 
                 # Verify SL actually attached rather than assume the
                 # order-create params were honored -- this position is
@@ -323,6 +335,11 @@ class AutoExecutor:
             else:
                 err = result.get("retMsg", "Unknown error")
                 print(f"[EXECUTOR] ❌ Order failed: {err}")
+                self.last_order = {
+                    "ok": False, "symbol": symbol_raw, "order_id": None,
+                    "order_link_id": link_id, "msg": err,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
                 # One automatic downsize retry on insufficient margin
                 if "not enough" in err.lower() or "ab not enough" in err.lower():
                     step = QTY_STEP.get(symbol_raw, 0.01)
@@ -525,6 +542,8 @@ class AutoExecutor:
                     if p: new_sl = float(p.get("stopLoss") or 0)
                 if abs(new_sl - be_price) < be_price * 0.001:  # matches within tick-size rounding
                     print(f"[EXECUTOR] ✅ BE confirmed for {symbol_raw}: SL now {new_sl} (was {sl})")
+                    self.last_be_move_at = datetime.now(timezone.utc).isoformat()
+                    self.last_be_symbol = symbol_raw
                     return True
                 print(f"[EXECUTOR] ⚠ BE move returned success for {symbol_raw} but SL reads "
                       f"{new_sl}, expected ~{be_price} -- treating as unconfirmed, will retry")
@@ -545,6 +564,7 @@ class AutoExecutor:
         print("[EXECUTOR] BE monitor started")
         while self.running:
             try:
+                self.last_be_check_at = datetime.now(timezone.utc).isoformat()
                 data = await bybit_get("/v5/position/list",
                                       {"category": "linear", "settleCoin": "USDT"})
                 if data.get("retCode") == 0:

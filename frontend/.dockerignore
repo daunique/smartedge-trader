@@ -1,5 +1,9 @@
 node_modules
 dist
-.env
 .git
+.env
+.env.*
 *.md
+Dockerfile*
+!Dockerfile
+fly.toml

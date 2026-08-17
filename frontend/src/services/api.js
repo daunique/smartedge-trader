@@ -57,6 +57,7 @@ class ApiService {
 
   // ── Health ────────────────────────────────────────────────────
   async ping() { return this.request('/health') }
+  async getStatus() { return this.request('/api/status') }
 }
 
 export const api = new ApiService()

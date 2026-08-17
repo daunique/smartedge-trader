@@ -1,17 +1,16 @@
-# SmartEdge Web — Fly.io
-# Deploy from frontend/:
+# Deploy FROM the frontend/ directory:
+#   cd frontend
 #   fly deploy --build-arg VITE_API_URL=https://smartedge-api.fly.dev
 #
-# Replace app name / API URL with your own after fly apps create.
+# If Fly previously generated a different Dockerfile, this one replaces it.
 
 app = "smartedge-web"
 primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"
+
   [build.args]
-    # Override at deploy time:
-    # fly deploy --build-arg VITE_API_URL=https://YOUR-API.fly.dev
     VITE_API_URL = "https://smartedge-api.fly.dev"
 
 [http_service]
@@ -25,7 +24,7 @@ primary_region = "lhr"
   [[http_service.checks]]
     interval = "30s"
     timeout = "5s"
-    grace_period = "10s"
+    grace_period = "15s"
     method = "GET"
     path = "/"
 

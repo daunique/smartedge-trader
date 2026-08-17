@@ -64,11 +64,17 @@ function Kpi({ label, value, sub, tone }) {
   )
 }
 
-function PosRow({ p }) {
+function PosRow({ p, liveMark }) {
   const closeInStore = useStore(s => s.closePosition)
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
   const long = p.direction === 'LONG'
+  const mark = liveMark != null ? liveMark : p.current
+  const entry = Number(p.entry) || 0
+  const size = Number(p.size) || 0
+  const livePnl = (entry && size && mark != null)
+    ? (long ? (mark - entry) : (entry - mark)) * size
+    : (p.pnl || 0)
   const rr = Math.min(100, Math.max(0, ((p.rrAchieved || 0) / 3) * 100))
 
   const close = async () => {
@@ -88,13 +94,13 @@ function PosRow({ p }) {
           <span className={long ? 'pill-long' : 'pill-short'}>{p.direction}</span>
           {p.status === 'BE' && <span className="text-[10px] text-[#F0B90B] font-medium">BE</span>}
         </div>
-        <div className={clsx('mono text-[14px] font-semibold', (p.pnl || 0) >= 0 ? 'pos' : 'neg')}>
-          {(p.pnl || 0) >= 0 ? '+' : ''}{(p.pnl || 0).toFixed(2)}
+        <div className={clsx('mono text-[14px] font-semibold', livePnl >= 0 ? 'pos' : 'neg')}>
+          {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)}
         </div>
       </div>
       <div className="grid grid-cols-3 gap-2 text-[11px] mb-2">
         <div><span className="text-[#848E9C]">Entry </span><span className="mono">{p.entry}</span></div>
-        <div><span className="text-[#848E9C]">Mark </span><span className="mono">{p.current}</span></div>
+        <div><span className="text-[#848E9C]">Mark </span><span className="mono">{mark != null ? Number(mark).toFixed(4) : '—'}</span></div>
         <div className="text-right"><span className="text-[#848E9C]">R </span><span className="mono text-[#F0B90B]">{(p.rrAchieved || 0).toFixed(2)}</span></div>
       </div>
       <div className="h-1 bg-[#1E2329] rounded-full overflow-hidden mb-2">
@@ -115,7 +121,7 @@ export default function Dashboard() {
   const {
     portfolioBalance, dailyPnl, dailyPnlPct, weeklyPnl,
     winRate, avgRR, positions, tradeHistory, settings,
-    currentStreak, openPnl, totalTrades,
+    currentStreak, openPnl, totalTrades, livePrices,
   } = useStore()
 
   const [left, setLeft] = useState('')
@@ -219,7 +225,11 @@ export default function Dashboard() {
           <div className="card py-8 text-center text-[12px] text-[#848E9C]">No open positions</div>
         ) : (
           <div className="space-y-2">
-            {positions.map(p => <PosRow key={p.id || p.symbol} p={p} />)}
+            {positions.map(p => {
+            const sym = (p.symbol || '').replace('/', '')
+            const mark = livePrices?.[sym]?.price ?? livePrices?.[p.symbol]?.price
+            return <PosRow key={p.id || p.symbol} p={p} liveMark={mark} />
+          })}
           </div>
         )}
       </div>

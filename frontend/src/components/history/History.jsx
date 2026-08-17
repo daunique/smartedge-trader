@@ -2,11 +2,72 @@ import React, { useMemo, useState } from 'react'
 import { useStore } from '../../store'
 import clsx from 'clsx'
 import { format } from 'date-fns'
+import { Download, X } from 'lucide-react'
+
+function TradeDrawer({ trade, onClose }) {
+  if (!trade) return null
+  const rows = [
+    ['Symbol', trade.symbol],
+    ['Side', trade.direction],
+    ['Status', trade.status],
+    ['PnL', `${(trade.pnl || 0) >= 0 ? '+' : ''}${(trade.pnl || 0).toFixed(4)}`],
+    ['R', trade.rr ?? '—'],
+    ['Time', trade.date ? format(new Date(trade.date), 'yyyy-MM-dd HH:mm:ss') : '—'],
+    ['Duration', trade.duration || '—'],
+    ['Market', trade.market || 'crypto'],
+    ['Id', trade.id || '—'],
+  ]
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-3" onClick={onClose}>
+      <div className="card w-full max-w-md p-4 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-[15px] font-semibold">Trade detail</h2>
+          <button onClick={onClose} className="text-[#848E9C] hover:text-[#EAECEF]"><X size={18} /></button>
+        </div>
+        <div className="space-y-2">
+          {rows.map(([k, v]) => (
+            <div key={k} className="flex justify-between gap-3 text-[12px] border-b border-[#1E2329] pb-1.5">
+              <span className="text-[#848E9C]">{k}</span>
+              <span className={clsx('mono text-right break-all',
+                k === 'PnL' && (trade.pnl || 0) >= 0 && 'text-[#0ECB81]',
+                k === 'PnL' && (trade.pnl || 0) < 0 && 'text-[#F6465D]'
+              )}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function exportCsv(trades) {
+  const header = ['date', 'symbol', 'direction', 'status', 'pnl', 'rr', 'id']
+  const lines = [header.join(',')]
+  trades.forEach(t => {
+    lines.push([
+      t.date || '',
+      t.symbol || '',
+      t.direction || '',
+      t.status || '',
+      t.pnl ?? '',
+      t.rr ?? '',
+      t.id || '',
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+  })
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `smartedge-xrp-trades-${format(new Date(), 'yyyyMMdd-HHmm')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 export default function History() {
   const { tradeHistory } = useStore()
   const [filter, setFilter] = useState('ALL')
   const [pair, setPair] = useState('XRP')
+  const [selected, setSelected] = useState(null)
 
   const trades = useMemo(() => {
     let list = [...(tradeHistory || [])].sort((a, b) => new Date(b.date) - new Date(a.date))
@@ -31,7 +92,11 @@ export default function History() {
             </span>
           </p>
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap items-center">
+          <button onClick={() => exportCsv(trades)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-[#1E2329] text-[10px] font-semibold text-[#EAECEF] hover:border-[#F0B90B]/40">
+            <Download size={12} /> CSV
+          </button>
           <div className="flex p-0.5 rounded bg-[#161A1E] border border-[#1E2329]">
             {['XRP', 'ALL'].map(p => (
               <button key={p} onClick={() => setPair(p)}
@@ -63,8 +128,8 @@ export default function History() {
           </div>
           <div className="divide-y divide-[#1E2329]">
             {trades.map((t, i) => (
-              <div key={t.id || i}
-                className="grid grid-cols-[72px_1fr_52px_56px] sm:grid-cols-[90px_1fr_56px_48px_48px_64px] gap-0 px-3 py-2.5 items-center hover:bg-[#161A1E]/50">
+              <button key={t.id || i} type="button" onClick={() => setSelected(t)}
+                className="w-full text-left grid grid-cols-[72px_1fr_52px_56px] sm:grid-cols-[90px_1fr_56px_48px_48px_64px] gap-0 px-3 py-2.5 items-center hover:bg-[#161A1E]/50">
                 <div className="text-[11px] text-[#848E9C] mono">
                   {format(new Date(t.date), 'MM/dd HH:mm')}
                 </div>
@@ -82,11 +147,13 @@ export default function History() {
                 <div className={clsx('mono text-[12px] font-semibold text-right', (t.pnl || 0) >= 0 ? 'pos' : 'neg')}>
                   {(t.pnl || 0) >= 0 ? '+' : ''}{(t.pnl || 0).toFixed(2)}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
       )}
+
+      <TradeDrawer trade={selected} onClose={() => setSelected(null)} />
     </div>
   )
 }

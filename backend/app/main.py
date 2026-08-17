@@ -1,3 +1,4 @@
+import os
 """
 SmartEdge Trader — FastAPI Backend
 Live Bybit Demo + Signal Engine + Auto Execution
@@ -159,17 +160,50 @@ async def root():
 
 @app.get("/health")
 async def health():
+    equity = None
+    available = None
+    open_positions = 0
+    try:
+        data = await bybit_get("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+        if data.get("retCode") == 0:
+            acc = (data.get("result", {}).get("list") or [{}])[0]
+            equity = float(acc.get("totalEquity") or 0)
+            available = float(acc.get("totalAvailableBalance") or 0)
+        pos = await bybit_get("/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+        if pos.get("retCode") == 0:
+            open_positions = sum(
+                1 for p in pos["result"].get("list", [])
+                if p.get("symbol") == "XRPUSDT" and float(p.get("size") or 0) > 0
+            )
+    except Exception:
+        pass
     return {
         "status": "ok",
+        "ok": True,
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "1.0.0",
+        "version": "1.1.0",
         "execution_mode": auto_executor.mode,
         "paused": auto_executor.paused,
         "api_key_set": bool(get_api_key()),
+        "endpoint": DEMO_BASE,
+        "account_mode": os.getenv("ACCOUNT_MODE", "DEMO"),
+        "equity": equity,
+        "available": available,
+        "open_positions": open_positions,
         "signals_active": len(signal_engine.get_active()),
         "trades_today": auto_executor.trades_today,
-        "endpoint": DEMO_BASE,
+        "last_scan_at": getattr(signal_engine, "last_scan_at", None),
+        "last_scan_result": getattr(signal_engine, "last_scan_result", None),
+        "last_be_check_at": getattr(auto_executor, "last_be_check_at", None),
+        "last_be_move_at": getattr(auto_executor, "last_be_move_at", None),
+        "last_be_symbol": getattr(auto_executor, "last_be_symbol", None),
+        "last_order": getattr(auto_executor, "last_order", None),
     }
+
+@app.get("/api/status")
+async def api_status():
+    """Same payload as /health for the dashboard status strip."""
+    return await health()
 
 @app.get("/api/portfolio")
 async def get_portfolio():

@@ -8,6 +8,7 @@ import Signals from './components/signals/Signals'
 import History from './components/history/History'
 import Statistics from './components/statistics/Statistics'
 import Settings from './components/settings/Settings'
+import StatusStrip from './components/shared/StatusStrip'
 import { useLiveData } from './hooks/useLiveData'
 import { useStore } from './store'
 import clsx from 'clsx'
@@ -163,6 +164,7 @@ export default function App() {
       <div className="flex flex-1 max-w-5xl w-full mx-auto">
         <SideNav />
         <main className="flex-1 min-w-0 px-3 py-3 pb-[68px] md:pb-4">
+          <StatusStrip />
           <Page />
         </main>
       </div>

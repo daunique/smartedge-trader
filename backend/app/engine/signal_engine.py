@@ -215,6 +215,8 @@ class SignalEngine:
         self.signals = []
         self.running = False
         self.broadcast_cb = None
+        self.last_scan_at = None
+        self.last_scan_result = None  # short summary string
 
     def set_broadcast(self, cb):
         self.broadcast_cb = cb
@@ -274,6 +276,8 @@ class SignalEngine:
             if not any(s.symbol == ns.symbol and s.executed for s in self.signals)
         ]
         print(f"[ENGINE] {len(new_signals)} new | {len(self.signals)} active")
+        self.last_scan_at = datetime.now(timezone.utc).isoformat()
+        self.last_scan_result = f"{len(new_signals)} new, {len(self.signals)} active"
 
         if self.broadcast_cb:
             await self.broadcast_cb({
