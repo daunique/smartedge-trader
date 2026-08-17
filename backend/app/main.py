@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from app.engine.signal_engine import signal_engine
 from app.engine.auto_executor import auto_executor
+from app import db
 from app.bybit_client import (
     DEMO_BASE, get_api_key, bybit_get, bybit_post,
     get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc,
@@ -137,6 +138,15 @@ async def keepalive_ping():
 async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
     print(f"   API Key set: {bool(get_api_key())}")
+    try:
+        pool = await db.get_pool()
+        print(f"   Supabase DB: {'connected' if pool else 'not configured / failed'}")
+        stored = await db.load_settings()
+        if stored:
+            auto_executor.update_settings(stored)
+            print("   Loaded settings from Supabase")
+    except Exception as e:
+        print(f"   Supabase init: {e}")
     signal_engine.set_broadcast(manager.broadcast)
     auto_executor.set_broadcast(manager.broadcast)
     asyncio.create_task(signal_engine.run())
@@ -198,6 +208,7 @@ async def health():
         "last_be_move_at": getattr(auto_executor, "last_be_move_at", None),
         "last_be_symbol": getattr(auto_executor, "last_be_symbol", None),
         "last_order": getattr(auto_executor, "last_order", None),
+        "supabase": await db.db_status(),
     }
 
 @app.get("/api/status")
@@ -233,6 +244,10 @@ async def get_portfolio():
         # Sync executor
         auto_executor.trades_today = trades_today_count
 
+        try:
+            await db.save_equity(equity, free, 0)
+        except Exception:
+            pass
         return {
             "balance":             equity,
             "free":                free,
@@ -353,6 +368,12 @@ async def get_history(limit: int = 100, offset: int = 0):
         trades.reverse()
         total = len(trades)
         trades = trades[offset:offset + min(limit, 200)]
+        # Persist XRP closes into Supabase (best-effort)
+        for tr in trades[:20]:
+            try:
+                await db.save_trade(tr)
+            except Exception:
+                pass
         return {"trades": trades, "total": total, "source": "bybit_demo"}
     except Exception as e:
         print(f"[HISTORY] {e}")
@@ -361,6 +382,10 @@ async def get_history(limit: int = 100, offset: int = 0):
 @app.post("/api/settings")
 async def update_settings(settings: dict):
     auto_executor.update_settings(settings)
+    try:
+        await db.save_settings(settings)
+    except Exception as e:
+        print(f"[SETTINGS] db save: {e}")
     return {"success": True, "settings": settings}
 
 @app.post("/api/mode/{mode}")

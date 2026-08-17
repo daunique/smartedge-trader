@@ -1,8 +1,8 @@
 /**
  * SmartEdge Trader — API Service
+ * Empty BASE_URL = same origin (nginx proxies /api → backend on Fly)
  */
-
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
 
 class ApiService {
   async request(endpoint, options = {}) {
@@ -19,15 +19,15 @@ class ApiService {
     }
   }
 
-  // ── Portfolio ─────────────────────────────────────────────────
   async getPortfolio()  { return this.request('/api/portfolio') }
   async getPositions()  { return this.request('/api/positions') }
   async getSignals()    { return this.request('/api/signals') }
   async getHistory(limit = 50, offset = 0) {
     return this.request(`/api/history?limit=${limit}&offset=${offset}`)
   }
+  async getStatus() { return this.request('/api/status') }
+  async ping() { return this.request('/health') }
 
-  // ── Settings ──────────────────────────────────────────────────
   async saveSettings(settings) {
     return this.request('/api/settings', {
       method: 'POST',
@@ -35,9 +35,8 @@ class ApiService {
     })
   }
 
-  // ── Trade Actions ─────────────────────────────────────────────
   async closePosition(id, reason = 'manual') {
-    return this.request(`/api/positions/${id}/close?reason=${reason}`, {
+    return this.request(`/api/positions/${id}/close?reason=${encodeURIComponent(reason)}`, {
       method: 'POST'
     })
   }
@@ -46,7 +45,6 @@ class ApiService {
     return this.request(`/api/execute/${signalId}`, { method: 'POST' })
   }
 
-  // ── Mode & Control ────────────────────────────────────────────
   async setMode(mode) {
     return this.request(`/api/mode/${mode}`, { method: 'POST' })
   }
@@ -54,10 +52,6 @@ class ApiService {
   async setPause(paused) {
     return this.request(`/api/pause/${paused}`, { method: 'POST' })
   }
-
-  // ── Health ────────────────────────────────────────────────────
-  async ping() { return this.request('/health') }
-  async getStatus() { return this.request('/api/status') }
 }
 
 export const api = new ApiService()

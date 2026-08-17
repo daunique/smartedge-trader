@@ -1,12 +1,11 @@
-# Used when deploying smartedge-web from repo ROOT via Fly UI / GitHub
 app = "smartedge-web"
 primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"
 
-  [build.args]
-    VITE_API_URL = "https://smartedge-api.fly.dev"
+[env]
+  BACKEND_URL = "https://smartedge-api.fly.dev"
 
 [http_service]
   internal_port = 8080

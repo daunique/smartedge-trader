@@ -1,11 +1,14 @@
 /**
- * SmartEdge Trader — WebSocket Service
- * Real-time position updates, signals, and price feeds
+ * WebSocket — same origin by default (nginx upgrades /ws → backend)
  */
-
-const WS_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000')
-  .replace('https://', 'wss://')
-  .replace('http://', 'ws://')
+function wsBase() {
+  const env = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+  if (env) {
+    return env.replace('https://', 'wss://').replace('http://', 'ws://')
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}`
+}
 
 class WebSocketService {
   constructor() {
@@ -16,45 +19,37 @@ class WebSocketService {
     this.maxReconnectDelay = 30000
     this.connected = false
     this.manualClose = false
+    this._handlers = null
   }
 
-  connect() {
+  connect(handlers = {}) {
+    this._handlers = handlers
     if (this.ws?.readyState === WebSocket.OPEN) return
     this.manualClose = false
-
     try {
-      this.ws = new WebSocket(`${WS_URL}/ws`)
-
+      this.ws = new WebSocket(`${wsBase()}/ws`)
       this.ws.onopen = () => {
-        console.log('[WS] Connected')
         this.connected = true
         this.reconnectDelay = 3000
+        handlers.onOpen?.()
         this.emit('connection', { status: 'connected' })
       }
-
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          handlers.onMessage?.(data)
           this.emit(data.type, data)
           this.emit('message', data)
-        } catch (e) {
-          console.error('[WS] Parse error:', e)
-        }
+        } catch (_) {}
       }
-
       this.ws.onclose = () => {
         this.connected = false
-        this.emit('connection', { status: 'disconnected' })
+        handlers.onClose?.()
         if (!this.manualClose) this.scheduleReconnect()
       }
-
-      this.ws.onerror = (err) => {
-        console.error('[WS] Error:', err)
-        this.emit('connection', { status: 'error' })
-      }
-
-    } catch (err) {
-      console.error('[WS] Failed to connect:', err)
+      this.ws.onerror = () => handlers.onClose?.()
+    } catch (e) {
+      console.error('[WS]', e)
       this.scheduleReconnect()
     }
   }
@@ -62,42 +57,28 @@ class WebSocketService {
   scheduleReconnect() {
     clearTimeout(this.reconnectTimer)
     this.reconnectTimer = setTimeout(() => {
-      console.log(`[WS] Reconnecting...`)
       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, this.maxReconnectDelay)
-      this.connect()
+      this.connect(this._handlers || {})
     }, this.reconnectDelay)
+  }
+
+  on(event, cb) {
+    if (!this.listeners[event]) this.listeners[event] = []
+    this.listeners[event].push(cb)
+    return () => {
+      this.listeners[event] = (this.listeners[event] || []).filter(x => x !== cb)
+    }
+  }
+
+  emit(event, data) {
+    (this.listeners[event] || []).forEach(cb => cb(data))
   }
 
   disconnect() {
     this.manualClose = true
     clearTimeout(this.reconnectTimer)
     this.ws?.close()
-    this.connected = false
   }
-
-  // ── Event System ──────────────────────────────────────────────
-  on(event, callback) {
-    if (!this.listeners[event]) this.listeners[event] = []
-    this.listeners[event].push(callback)
-    return () => this.off(event, callback)
-  }
-
-  off(event, callback) {
-    if (!this.listeners[event]) return
-    this.listeners[event] = this.listeners[event].filter(cb => cb !== callback)
-  }
-
-  emit(event, data) {
-    this.listeners[event]?.forEach(cb => cb(data))
-  }
-
-  send(data) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data))
-    }
-  }
-
-  isConnected() { return this.connected }
 }
 
 export const wsService = new WebSocketService()
