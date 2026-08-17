@@ -5,9 +5,9 @@ SmartEdge Trader — FastAPI Backend
 Live Bybit Demo + Signal Engine + Auto Execution
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio, json, os

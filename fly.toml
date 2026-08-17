@@ -1,9 +1,7 @@
-# ONE app: API + Web (recommended)
-# Create once:  fly apps create smartedge-trader
-# Secrets:      BYBIT_API_KEY, BYBIT_API_SECRET, DATABASE_URL (optional)
-# Deploy:       fly deploy -a smartedge-trader
+# Unified API + UI — deploy to smartedge-web (your existing app name)
+# IMPORTANT: rebuild from source. Do NOT use --image registry.fly.io/...
 
-app = "smartedge-trader"
+app = "smartedge-web"
 primary_region = "jnb"
 
 [build]
@@ -23,8 +21,8 @@ primary_region = "jnb"
 
   [[http_service.checks]]
     interval = "15s"
-    timeout = "5s"
-    grace_period = "25s"
+    timeout = "8s"
+    grace_period = "40s"
     method = "GET"
     path = "/health"
 
