@@ -1,10 +1,13 @@
+from pathlib import Path
 import os
 """
 SmartEdge Trader — FastAPI Backend
 Live Bybit Demo + Signal Engine + Auto Execution
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio, json, os
@@ -166,6 +169,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
 # ── Routes ────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
+    index = Path("/app/static/index.html")
+    if index.exists():
+        return FileResponse(index)
     return {"app": "SmartEdge Trader", "status": "online", "mode": auto_executor.mode}
 
 @app.get("/health")
@@ -513,3 +519,24 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
         print("INFO:     connection closed")
+
+
+# ── Frontend SPA (same origin) ────────────────────────────────────
+_STATIC = Path(__file__).resolve().parent.parent / "static"
+if not _STATIC.exists():
+    _STATIC = Path("/app/static")
+
+if _STATIC.exists() and (_STATIC / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=str(_STATIC / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        # Do not swallow API routes (already registered above)
+        file_path = _STATIC / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_STATIC / "index.html")
+    print(f"[APP] Serving SPA from {_STATIC}")
+else:
+    print(f"[APP] No SPA static dir at {_STATIC} — API only")
+
