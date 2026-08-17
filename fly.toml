@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for smartedge-web on 2026-08-17T23:14:21Z
+# fly.toml app configuration file generated for smartedge-web on 2026-08-17T23:21:56Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = "smartedge-web"
-primary_region = "fra"
+primary_region = 'arn'
 
 [build]
   dockerfile = "Dockerfile"
