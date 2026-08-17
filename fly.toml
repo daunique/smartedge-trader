@@ -1,29 +1,35 @@
-# Used when deploying smartedge-web from repo ROOT via Fly UI / GitHub
-app = "smartedge-web"
-primary_region = "lhr"
+# fly.toml app configuration file generated for smartedge-web on 2026-08-17T19:32:35Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'smartedge-web'
+primary_region = 'jnb'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
   [build.args]
-    VITE_API_URL = "https://smartedge-api.fly.dev"
+    VITE_API_URL = 'https://smartedge-api.fly.dev'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "15s"
-    method = "GET"
-    path = "/"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '15s'
+    method = 'GET'
+    path = '/'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
