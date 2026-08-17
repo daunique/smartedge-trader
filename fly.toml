@@ -1,7 +1,6 @@
-# Bybit blocks some regions (e.g. jnb) via CloudFront 403.
-# Use a supported region: lhr, iad, fra, sin, ams, nrt, ...
+# Region: bom (Mumbai). Avoid jnb — Bybit CloudFront geo-blocks it.
 app = "smartedge-web"
-primary_region = "lhr"
+primary_region = "bom"
 
 [build]
   dockerfile = "Dockerfile"
