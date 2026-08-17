@@ -1,8 +1,7 @@
-# Unified API + UI — deploy to smartedge-web (your existing app name)
-# IMPORTANT: rebuild from source. Do NOT use --image registry.fly.io/...
-
+# Bybit blocks some regions (e.g. jnb) via CloudFront 403.
+# Use a supported region: lhr, iad, fra, sin, ams, nrt, ...
 app = "smartedge-web"
-primary_region = "jnb"
+primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"

@@ -102,6 +102,18 @@ async def _ensure_schema(pool) -> None:
         """)
 
 
+def _as_dt(value):
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value
+    s = str(value).strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
 async def save_trade(trade: dict) -> bool:
     pool = await get_pool()
     if not pool:
@@ -124,8 +136,8 @@ async def save_trade(trade: dict) -> bool:
                 trade.get("status"),
                 float(trade.get("pnl") or 0),
                 str(trade.get("rr") or ""),
-                json.dumps(trade),
-                trade.get("date") or datetime.now(timezone.utc).isoformat(),
+                json.dumps(trade, default=str),
+                _as_dt(trade.get("date")),
             )
         return True
     except Exception as e:
