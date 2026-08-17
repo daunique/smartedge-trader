@@ -4,8 +4,14 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Runtime DNS — do NOT resolve BACKEND at nginx -t / startup time
+    # (that was crashing the machine when smartedge-api was missing/unresolvable)
+    resolver 8.8.8.8 1.1.1.1 ipv6=off valid=30s;
+    resolver_timeout 5s;
+
     location /api/ {
-        proxy_pass ${BACKEND_URL}/api/;
+        set $backend "${BACKEND_URL}";
+        proxy_pass $backend/api/;
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
         proxy_set_header Host $proxy_host;
@@ -17,14 +23,16 @@ server {
     }
 
     location = /health {
-        proxy_pass ${BACKEND_URL}/health;
+        set $backend "${BACKEND_URL}";
+        proxy_pass $backend/health;
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
         proxy_set_header Host $proxy_host;
     }
 
     location /ws {
-        proxy_pass ${BACKEND_URL}/ws;
+        set $backend "${BACKEND_URL}";
+        proxy_pass $backend/ws;
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
         proxy_set_header Upgrade $http_upgrade;
