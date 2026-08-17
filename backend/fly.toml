@@ -3,7 +3,7 @@
 # App name can be changed on first launch.
 
 app = "smartedge-api"
-primary_region = "bom"
+primary_region = "fra"
 
 [build]
   dockerfile = "Dockerfile"
