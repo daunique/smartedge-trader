@@ -1,6 +1,6 @@
-# Region: bom (Mumbai). Avoid jnb — Bybit CloudFront geo-blocks it.
+# Region: fra (Frankfurt). Avoid jnb — Bybit CloudFront geo-blocks it.
 app = "smartedge-web"
-primary_region = "bom"
+primary_region = "fra"
 
 [build]
   dockerfile = "Dockerfile"

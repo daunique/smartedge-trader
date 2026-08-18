@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from 'react'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import React, { useMemo, useState } from 'react'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useStore } from '../../store'
 import { api } from '../../services/api'
 import clsx from 'clsx'
@@ -9,24 +9,29 @@ function EquityChart({ tradeHistory }) {
   const data = useMemo(() => {
     const sorted = [...(tradeHistory || [])].sort((a, b) => new Date(a.date) - new Date(b.date))
     let run = 0
-    return sorted.slice(-40).map(t => {
+    return sorted.slice(-60).map(t => {
       run += t.pnl || 0
-      return { v: Math.round(run * 100) / 100, d: format(new Date(t.date), 'M/d') }
+      return { v: Math.round(run * 100) / 100, d: format(new Date(t.date), 'MM/dd'), full: t.date }
     })
   }, [tradeHistory])
 
   if (!data.length) {
-    return <div className="h-full flex items-center justify-center text-[12px] text-[#848E9C]">No trade data</div>
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-1 text-[12px] text-[#848E9C]">
+        <span className="text-[#F0B90B]/80 font-medium">Equity curve</span>
+        <span>No closed trades yet</span>
+      </div>
+    )
   }
 
   const Tip = ({ active, payload }) => {
     if (!active || !payload?.[0]) return null
     const v = payload[0].value
     return (
-      <div className="bg-[#1E2329] border border-[#2B3139] rounded px-2 py-1.5 text-[11px]">
-        <div className="text-[#848E9C]">{payload[0].payload.d}</div>
-        <div className={clsx('mono font-semibold', v >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]')}>
-          ${v.toFixed(2)}
+      <div className="bg-[#0B0E11] border border-[#2B3139] rounded-md px-2.5 py-1.5 shadow-lg text-[11px]">
+        <div className="text-[#848E9C] mb-0.5">{payload[0].payload.d}</div>
+        <div className={clsx('mono font-semibold tabular-nums', v >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]')}>
+          {v >= 0 ? '+' : ''}${v.toFixed(2)}
         </div>
       </div>
     )
@@ -34,17 +39,18 @@ function EquityChart({ tradeHistory }) {
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 4, left: 8 }}>
         <defs>
-          <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#F0B90B" stopOpacity={0.25} />
+          <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#F0B90B" stopOpacity={0.28} />
             <stop offset="100%" stopColor="#F0B90B" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <XAxis dataKey="d" hide />
-        <YAxis hide domain={['auto', 'auto']} />
-        <Tooltip content={<Tip />} />
-        <Area type="monotone" dataKey="v" stroke="#F0B90B" strokeWidth={1.5} fill="url(#eq)" />
+        <CartesianGrid stroke="#1E2329" strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="d" tick={{ fill: '#5E6673', fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} />
+        <YAxis tick={{ fill: '#5E6673', fontSize: 10 }} axisLine={false} tickLine={false} width={42} tickFormatter={v => `$${v}`} />
+        <Tooltip content={<Tip />} cursor={{ stroke: '#2B3139' }} />
+        <Area type="monotone" dataKey="v" stroke="#F0B90B" strokeWidth={2} fill="url(#eqFill)" />
       </AreaChart>
     </ResponsiveContainer>
   )
@@ -52,67 +58,109 @@ function EquityChart({ tradeHistory }) {
 
 function Kpi({ label, value, sub, tone }) {
   return (
-    <div className="card px-3 py-2.5">
-      <div className="label mb-1">{label}</div>
-      <div className={clsx('mono text-[15px] font-semibold leading-tight',
+    <div className="rounded-lg border border-[#1E2329] bg-[#0B0E11] px-3 py-3 hover:border-[#2B3139] transition-colors">
+      <div className="text-[10px] uppercase tracking-wider text-[#5E6673] font-medium mb-1.5">{label}</div>
+      <div className={clsx(
+        'mono text-[17px] font-semibold leading-none tabular-nums',
         tone === 'pos' && 'text-[#0ECB81]',
         tone === 'neg' && 'text-[#F6465D]',
         !tone && 'text-[#EAECEF]'
       )}>{value}</div>
-      {sub && <div className="text-[10px] text-[#848E9C] mt-0.5">{sub}</div>}
+      {sub != null && sub !== '' && (
+        <div className="text-[10px] text-[#848E9C] mt-1.5 leading-snug">{sub}</div>
+      )}
     </div>
   )
 }
 
 function PosRow({ p, liveMark }) {
   const closeInStore = useStore(s => s.closePosition)
-  const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
   const long = p.direction === 'LONG'
-  const mark = liveMark != null ? liveMark : p.current
+  const mark = liveMark != null ? Number(liveMark) : Number(p.current)
   const entry = Number(p.entry) || 0
   const size = Number(p.size) || 0
-  const livePnl = (entry && size && mark != null)
+  const livePnl = (entry && size && mark)
     ? (long ? (mark - entry) : (entry - mark)) * size
-    : (p.pnl || 0)
+    : Number(p.pnl || 0)
   const rr = Math.min(100, Math.max(0, ((p.rrAchieved || 0) / 3) * 100))
+  const be = p.status === 'BE' || (p.sl && entry && Math.abs(Number(p.sl) - entry) / entry < 0.002)
 
-  const close = async () => {
-    if (!confirm) { setConfirm(true); setTimeout(() => setConfirm(false), 3000); return }
+  const onClose = async () => {
+    if (!confirm(`Close ${p.symbol} ${p.direction}?`)) return
     setBusy(true)
-    const r = await api.closePosition(p.id, 'manual')
-    setBusy(false); setConfirm(false)
-    if (r?.success) closeInStore(p.id)
-    else alert(r?.error || 'Close failed')
+    try {
+      await api.closePosition(p.id || p.symbol)
+      closeInStore?.(p.id || p.symbol)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
-    <div className="card p-3">
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold">{p.symbol}</span>
-          <span className={long ? 'pill-long' : 'pill-short'}>{p.direction}</span>
-          {p.status === 'BE' && <span className="text-[10px] text-[#F0B90B] font-medium">BE</span>}
+    <div className="rounded-lg border border-[#1E2329] bg-[#0B0E11] p-3 space-y-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[13px] font-semibold text-[#EAECEF]">{p.symbol}</span>
+            <span className={clsx(
+              'text-[10px] font-bold px-1.5 py-0.5 rounded',
+              long ? 'bg-[#0ECB81]/15 text-[#0ECB81]' : 'bg-[#F6465D]/15 text-[#F6465D]'
+            )}>{p.direction}</span>
+            {be && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F0B90B]/15 text-[#F0B90B]">BE</span>
+            )}
+          </div>
+          <div className="text-[10px] text-[#848E9C] mt-1 mono tabular-nums">
+            Size {size} · Lev {p.leverage || '—'}×
+          </div>
         </div>
-        <div className={clsx('mono text-[14px] font-semibold', livePnl >= 0 ? 'pos' : 'neg')}>
-          {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)}
+        <div className="text-right shrink-0">
+          <div className={clsx('mono text-[15px] font-semibold tabular-nums', livePnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]')}>
+            {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)}
+          </div>
+          <div className="text-[10px] text-[#848E9C]">Open PnL</div>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2 text-[11px] mb-2">
-        <div><span className="text-[#848E9C]">Entry </span><span className="mono">{p.entry}</span></div>
-        <div><span className="text-[#848E9C]">Mark </span><span className="mono">{mark != null ? Number(mark).toFixed(4) : '—'}</span></div>
-        <div className="text-right"><span className="text-[#848E9C]">R </span><span className="mono text-[#F0B90B]">{(p.rrAchieved || 0).toFixed(2)}</span></div>
+
+      <div className="grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="text-[#5E6673] text-[10px]">Entry</div>
+          <div className="mono text-[#EAECEF] tabular-nums">{entry ? entry.toFixed(4) : '—'}</div>
+        </div>
+        <div>
+          <div className="text-[#5E6673] text-[10px]">Mark</div>
+          <div className="mono text-[#EAECEF] tabular-nums">{mark ? mark.toFixed(4) : '—'}</div>
+        </div>
+        <div>
+          <div className="text-[#5E6673] text-[10px]">SL / TP</div>
+          <div className="mono text-[#EAECEF] tabular-nums truncate">
+            {p.sl ? Number(p.sl).toFixed(4) : '—'} / {p.tp ? Number(p.tp).toFixed(4) : '—'}
+          </div>
+        </div>
       </div>
-      <div className="h-1 bg-[#1E2329] rounded-full overflow-hidden mb-2">
-        <div className="h-full bg-[#F0B90B] rounded-full" style={{ width: `${rr}%` }} />
+
+      <div>
+        <div className="flex justify-between text-[10px] text-[#848E9C] mb-1">
+          <span>Progress to 3R</span>
+          <span className="mono">{(p.rrAchieved || 0).toFixed(2)}R</span>
+        </div>
+        <div className="h-1.5 rounded-full bg-[#1E2329] overflow-hidden">
+          <div
+            className={clsx('h-full rounded-full transition-all', livePnl >= 0 ? 'bg-[#0ECB81]' : 'bg-[#F6465D]')}
+            style={{ width: `${rr}%` }}
+          />
+        </div>
       </div>
-      <div className="flex items-center justify-between">
-        <div className="text-[10px] text-[#848E9C] mono">SL {p.sl || '—'} · TP {p.tp || '—'}</div>
-        <button onClick={close} disabled={busy}
-          className={clsx('text-[11px] px-2 py-1 rounded border font-medium',
-            confirm ? 'border-[#F6465D] text-[#F6465D] bg-[#F6465D]/10' : 'border-[#2B3139] text-[#848E9C]'
-          )}>{busy ? '…' : confirm ? 'Confirm' : 'Close'}</button>
-      </div>
+
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onClose}
+        className="w-full py-1.5 rounded-md text-[11px] font-semibold border border-[#2B3139] text-[#F6465D] hover:bg-[#F6465D]/10 disabled:opacity-50"
+      >
+        {busy ? 'Closing…' : 'Close position'}
+      </button>
     </div>
   )
 }
@@ -124,112 +172,152 @@ export default function Dashboard() {
     currentStreak, openPnl, totalTrades, livePrices,
   } = useStore()
 
-  const [left, setLeft] = useState('')
-  useEffect(() => {
-    const t = () => {
-      const n = new Date()
-      const d = 3600 - (n.getUTCMinutes() * 60 + n.getUTCSeconds())
-      setLeft(`${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}`)
-    }
-    t(); const i = setInterval(t, 1000); return () => clearInterval(i)
-  }, [])
+  const bal = Number(portfolioBalance || 0)
+  const dPnl = Number(dailyPnl || 0)
+  const dPct = Number(dailyPnlPct || 0)
+  const oPnl = Number(openPnl || 0)
+  const wPnl = Number(weeklyPnl || 0)
 
-  const today = useMemo(() => {
-    const n = new Date()
-    return (tradeHistory || []).filter(t => {
-      const d = new Date(t.date)
-      return d.toDateString() === n.toDateString()
-    })
+  const recent = useMemo(() => {
+    return [...(tradeHistory || [])]
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 8)
   }, [tradeHistory])
-  const tw = today.filter(t => (t.pnl || 0) > 0).length
-  const tl = today.filter(t => (t.pnl || 0) <= 0).length
-  const maxT = settings.maxTradesPerDay || 4
-  const lossPct = Math.min(100, (Math.abs(Math.min(0, dailyPnl)) / (Math.max(portfolioBalance, 1) * (settings.dailyLossLimit || 25) / 100)) * 100)
 
   return (
-    <div className="space-y-3">
-      {/* Equity strip */}
-      <div className="card p-3 flex items-end justify-between gap-3">
+    <div className="space-y-4 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
-          <div className="label mb-0.5">Equity</div>
-          <div className="mono text-[22px] font-bold leading-none tracking-tight">
-            ${Number(portfolioBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-          <div className={clsx('mono text-[12px] font-medium mt-1.5', dailyPnl >= 0 ? 'pos' : 'neg')}>
-            {dailyPnl >= 0 ? '+' : ''}{dailyPnl.toFixed(2)}
-            <span className="text-[#848E9C] font-normal ml-1">({dailyPnlPct.toFixed(2)}%) today</span>
-          </div>
+          <h1 className="text-[18px] font-semibold text-[#EAECEF] tracking-tight">Dashboard</h1>
+          <p className="text-[12px] text-[#848E9C] mt-0.5">
+            XRPUSDT · 1H · Risk {settings?.riskPerTrade?.XRPUSDT ?? 10}% · BE @ 2.0R
+          </p>
         </div>
         <div className="text-right">
-          <div className="label">Next bar</div>
-          <div className="mono text-[16px] font-semibold text-[#F0B90B]">{left}</div>
-        </div>
-      </div>
-
-      {/* KPI row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <Kpi label="Open PnL" value={`${openPnl >= 0 ? '+' : ''}${openPnl.toFixed(2)}`}
-          sub={`${positions.length} pos`} tone={openPnl > 0 ? 'pos' : openPnl < 0 ? 'neg' : null} />
-        <Kpi label="Win rate" value={`${winRate}%`} sub={`${totalTrades} trades`} />
-        <Kpi label="Avg R" value={avgRR ? avgRR.toFixed(2) : '—'} sub={`${tw}W ${tl}L today`} />
-        <Kpi label="7D PnL" value={`${weeklyPnl >= 0 ? '+' : ''}${weeklyPnl.toFixed(2)}`}
-          tone={weeklyPnl > 0 ? 'pos' : weeklyPnl < 0 ? 'neg' : null} />
-      </div>
-
-      {/* Chart */}
-      <div className="card p-3">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[12px] font-semibold text-[#EAECEF]">PnL curve</span>
-          <span className={clsx('mono text-[12px] font-medium', weeklyPnl >= 0 ? 'pos' : 'neg')}>
-            {weeklyPnl >= 0 ? '+' : ''}{weeklyPnl.toFixed(2)} 7d
-          </span>
-        </div>
-        <div className="h-[140px]"><EquityChart tradeHistory={tradeHistory} /></div>
-      </div>
-
-      {/* Risk + streak */}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="card p-3">
-          <div className="label mb-1">Streak</div>
-          <div className={clsx('mono text-[20px] font-bold', currentStreak > 0 ? 'pos' : currentStreak < 0 ? 'neg' : '')}>
-            {currentStreak === 0 ? '0' : Math.abs(currentStreak)}
-          </div>
-          <div className="text-[10px] text-[#848E9C]">
-            {currentStreak > 0 ? 'wins' : currentStreak < 0 ? 'losses' : 'flat'}
-          </div>
-        </div>
-        <div className="card p-3">
-          <div className="label mb-2">Daily risk</div>
-          <div className="flex justify-between text-[10px] mb-1">
-            <span className="text-[#848E9C]">Loss</span>
-            <span className="mono">{lossPct.toFixed(0)}/{settings.dailyLossLimit}%</span>
-          </div>
-          <div className="h-1 bg-[#1E2329] rounded-full overflow-hidden mb-2">
-            <div className={clsx('h-full rounded-full', lossPct > 70 ? 'bg-[#F6465D]' : 'bg-[#0ECB81]')}
-              style={{ width: `${lossPct}%` }} />
-          </div>
-          <div className="flex justify-between text-[10px]">
-            <span className="text-[#848E9C]">Trades</span>
-            <span className="mono">{today.length}/{maxT}</span>
+          <div className="text-[10px] uppercase tracking-wider text-[#5E6673]">Equity</div>
+          <div className="mono text-[22px] font-semibold text-[#EAECEF] tabular-nums leading-none">
+            ${bal.toFixed(2)}
           </div>
         </div>
       </div>
 
-      {/* Positions */}
-      <div>
-        <div className="flex items-center justify-between mb-1.5 px-0.5">
-          <span className="text-[12px] font-semibold">Positions</span>
-          <span className="text-[11px] text-[#848E9C]">{positions.length}</span>
+      {/* KPI grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+        <Kpi
+          label="Daily PnL"
+          value={`${dPnl >= 0 ? '+' : ''}$${dPnl.toFixed(2)}`}
+          sub={`${dPct >= 0 ? '+' : ''}${dPct.toFixed(2)}% today`}
+          tone={dPnl > 0 ? 'pos' : dPnl < 0 ? 'neg' : undefined}
+        />
+        <Kpi
+          label="Open PnL"
+          value={`${oPnl >= 0 ? '+' : ''}$${oPnl.toFixed(2)}`}
+          sub={`${(positions || []).length} position(s)`}
+          tone={oPnl > 0 ? 'pos' : oPnl < 0 ? 'neg' : undefined}
+        />
+        <Kpi
+          label="Win rate"
+          value={`${Number(winRate || 0).toFixed(0)}%`}
+          sub={`${totalTrades || 0} closed trades`}
+        />
+        <Kpi
+          label="Avg R:R"
+          value={Number(avgRR || 0) ? `1:${Number(avgRR).toFixed(1)}` : '—'}
+          sub="Realized exits"
+        />
+        <Kpi
+          label="Streak"
+          value={currentStreak || '—'}
+          sub="Current run"
+          tone={String(currentStreak || '').startsWith('W') ? 'pos' : String(currentStreak || '').startsWith('L') ? 'neg' : undefined}
+        />
+        <Kpi
+          label="Weekly"
+          value={`${wPnl >= 0 ? '+' : ''}$${wPnl.toFixed(2)}`}
+          sub="Net this week"
+          tone={wPnl > 0 ? 'pos' : wPnl < 0 ? 'neg' : undefined}
+        />
+      </div>
+
+      {/* Chart + positions */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+        <div className="lg:col-span-3 rounded-lg border border-[#1E2329] bg-[#0B0E11] p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-[12px] font-semibold text-[#EAECEF]">Cumulative PnL</h2>
+            <span className="text-[10px] text-[#5E6673]">Last 60 closes</span>
+          </div>
+          <div className="h-[220px] sm:h-[260px]">
+            <EquityChart tradeHistory={tradeHistory} />
+          </div>
         </div>
-        {positions.length === 0 ? (
-          <div className="card py-8 text-center text-[12px] text-[#848E9C]">No open positions</div>
+
+        <div className="lg:col-span-2 space-y-2">
+          <div className="flex items-center justify-between px-0.5">
+            <h2 className="text-[12px] font-semibold text-[#EAECEF]">Open positions</h2>
+            <span className="text-[10px] text-[#5E6673]">{(positions || []).length}</span>
+          </div>
+          {!(positions || []).length ? (
+            <div className="rounded-lg border border-dashed border-[#1E2329] bg-[#0B0E11]/50 py-12 text-center text-[12px] text-[#848E9C]">
+              No open positions
+            </div>
+          ) : (
+            (positions || []).map(p => {
+              const sym = (p.symbol || '').replace('/', '')
+              const mark = livePrices?.[sym]?.price ?? livePrices?.[p.symbol]?.price
+              return <PosRow key={p.id || p.symbol} p={p} liveMark={mark} />
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Recent trades */}
+      <div className="rounded-lg border border-[#1E2329] bg-[#0B0E11] overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-[#1E2329] flex items-center justify-between">
+          <h2 className="text-[12px] font-semibold text-[#EAECEF]">Recent closes</h2>
+          <span className="text-[10px] text-[#5E6673]">XRPUSDT</span>
+        </div>
+        {!recent.length ? (
+          <div className="py-10 text-center text-[12px] text-[#848E9C]">No trade history yet</div>
         ) : (
-          <div className="space-y-2">
-            {positions.map(p => {
-            const sym = (p.symbol || '').replace('/', '')
-            const mark = livePrices?.[sym]?.price ?? livePrices?.[p.symbol]?.price
-            return <PosRow key={p.id || p.symbol} p={p} liveMark={mark} />
-          })}
+          <div className="divide-y divide-[#1E2329]">
+            <div className="hidden sm:grid grid-cols-[88px_1fr_56px_48px_72px] gap-2 px-3 py-1.5 text-[10px] uppercase tracking-wide text-[#5E6673]">
+              <div>Time</div>
+              <div>Pair</div>
+              <div>Side</div>
+              <div>R</div>
+              <div className="text-right">PnL</div>
+            </div>
+            {recent.map((t, i) => (
+              <div
+                key={t.id || i}
+                className="grid grid-cols-[1fr_auto] sm:grid-cols-[88px_1fr_56px_48px_72px] gap-2 px-3 py-2.5 items-center hover:bg-[#161A1E]/40"
+              >
+                <div className="text-[11px] text-[#848E9C] mono tabular-nums">
+                  {t.date ? format(new Date(t.date), 'MM/dd HH:mm') : '—'}
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[12px] font-medium text-[#EAECEF] truncate">{t.symbol}</span>
+                  <span className={clsx(
+                    'sm:hidden text-[10px] font-bold px-1 rounded',
+                    t.direction === 'LONG' ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+                  )}>{t.direction === 'LONG' ? 'L' : 'S'}</span>
+                </div>
+                <div className="hidden sm:block">
+                  <span className={clsx(
+                    'text-[10px] font-bold',
+                    t.direction === 'LONG' ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+                  )}>{t.direction}</span>
+                </div>
+                <div className="hidden sm:block mono text-[11px] text-[#848E9C]">{t.rr || '—'}</div>
+                <div className={clsx(
+                  'mono text-[12px] font-semibold text-right tabular-nums',
+                  (t.pnl || 0) >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+                )}>
+                  {(t.pnl || 0) >= 0 ? '+' : ''}{Number(t.pnl || 0).toFixed(2)}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
