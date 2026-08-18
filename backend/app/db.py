@@ -99,6 +99,18 @@ async def _ensure_schema(pool) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_trades_symbol_closed ON trades (symbol, closed_at DESC);
         CREATE INDEX IF NOT EXISTS idx_signals_created ON signals_log (created_at DESC);
+        CREATE TABLE IF NOT EXISTS position_state (
+            symbol TEXT PRIMARY KEY,
+            direction TEXT,
+            entry DOUBLE PRECISION,
+            tp DOUBLE PRECISION,
+            sl DOUBLE PRECISION,
+            orig_risk DOUBLE PRECISION,
+            peak_favorable DOUBLE PRECISION,
+            be_moved BOOLEAN DEFAULT FALSE,
+            signal_id TEXT,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """)
 
 
@@ -278,3 +290,102 @@ async def db_status() -> dict[str, Any]:
         return {"configured": False, "connected": False}
     pool = await get_pool()
     return {"configured": True, "connected": pool is not None}
+
+
+async def upsert_position_state(state: dict) -> bool:
+    """Persist BE-monitor fields so deploys do not wipe peak / orig_risk."""
+    pool = await get_pool()
+    if not pool:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO position_state
+                  (symbol, direction, entry, tp, sl, orig_risk, peak_favorable, be_moved, signal_id, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NOW())
+                ON CONFLICT (symbol) DO UPDATE SET
+                  direction = EXCLUDED.direction,
+                  entry = EXCLUDED.entry,
+                  tp = COALESCE(EXCLUDED.tp, position_state.tp),
+                  sl = EXCLUDED.sl,
+                  orig_risk = COALESCE(EXCLUDED.orig_risk, position_state.orig_risk),
+                  peak_favorable = EXCLUDED.peak_favorable,
+                  be_moved = EXCLUDED.be_moved OR position_state.be_moved,
+                  signal_id = COALESCE(EXCLUDED.signal_id, position_state.signal_id),
+                  updated_at = NOW()
+                """,
+                str(state.get("symbol") or "XRPUSDT"),
+                state.get("direction"),
+                float(state.get("entry") or 0) or None,
+                float(state.get("tp") or 0) or None,
+                float(state.get("sl") or 0) or None,
+                float(state["orig_risk"]) if state.get("orig_risk") not in (None, "") else None,
+                float(state["peak_favorable"]) if state.get("peak_favorable") not in (None, "") else None,
+                bool(state.get("be_moved")),
+                state.get("signal_id"),
+            )
+        return True
+    except Exception as e:
+        print(f"[DB] upsert_position_state: {e}")
+        return False
+
+
+async def load_position_states() -> dict:
+    """symbol -> row dict"""
+    pool = await get_pool()
+    if not pool:
+        return {}
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM position_state")
+        out = {}
+        for r in rows:
+            out[r["symbol"]] = dict(r)
+        return out
+    except Exception as e:
+        print(f"[DB] load_position_states: {e}")
+        return {}
+
+
+async def clear_position_state(symbol: str) -> bool:
+    pool = await get_pool()
+    if not pool:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM position_state WHERE symbol = $1", symbol)
+        return True
+    except Exception as e:
+        print(f"[DB] clear_position_state: {e}")
+        return False
+
+
+async def load_recent_signals(limit: int = 50) -> list:
+    pool = await get_pool()
+    if not pool:
+        return []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT raw FROM signals_log
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        out = []
+        for r in rows:
+            raw = r["raw"]
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    continue
+            if isinstance(raw, dict):
+                out.append(raw)
+        return out
+    except Exception as e:
+        print(f"[DB] load_recent_signals: {e}")
+        return []

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
 from app import telegram_notify
+from app import db
 from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_closing_order, is_today_utc
 from app.engine.signal_engine import (
     fetch_candles, wilder_atr_series, SL_ATR_MULT, ATR_PERIOD, signal_engine,
@@ -553,6 +554,16 @@ class AutoExecutor:
                     print(f"[EXECUTOR] ✅ BE confirmed for {symbol_raw}: SL now {new_sl} (was {sl})")
                     self.last_be_move_at = datetime.now(timezone.utc).isoformat()
                     self.last_be_symbol = symbol_raw
+                    if not hasattr(self, "_be_done"): self._be_done = set()
+                    self._be_done.add(symbol_raw)
+                    try:
+                        await db.upsert_position_state({
+                            "symbol": symbol_raw, "sl": new_sl, "entry": entry,
+                            "be_moved": True,
+                            "orig_risk": self._orig_risk.get(symbol_raw),
+                            "peak_favorable": self.peak_favorable.get(symbol_raw),
+                        })
+                    except Exception: pass
                     return True
                 print(f"[EXECUTOR] ⚠ BE move returned success for {symbol_raw} but SL reads "
                       f"{new_sl}, expected ~{be_price} -- treating as unconfirmed, will retry")
@@ -562,7 +573,45 @@ class AutoExecutor:
                 return False
         return False
 
+    async def hydrate_from_db(self):
+        """Restore peak_favorable / orig_risk after deploy so BE monitoring continues."""
+        try:
+            states = await db.load_position_states()
+            for sym, st in states.items():
+                peak = st.get("peak_favorable")
+                risk = st.get("orig_risk")
+                if peak is not None:
+                    self.peak_favorable[sym] = float(peak)
+                if risk is not None and float(risk) > 0:
+                    if not hasattr(self, "_orig_risk"):
+                        self._orig_risk = {}
+                    self._orig_risk[sym] = float(risk)
+                if st.get("be_moved"):
+                    if not hasattr(self, "_be_done"):
+                        self._be_done = set()
+                    self._be_done.add(sym)
+            if states:
+                print(f"[EXECUTOR] Restored position state for {list(states.keys())}")
+        except Exception as e:
+            print(f"[EXECUTOR] hydrate_from_db: {e}")
+
+    async def _persist_position_state(self, pos: dict, peak: float, orig_risk: float, be_moved: bool = False):
+        try:
+            await db.upsert_position_state({
+                "symbol": pos.get("symbol"),
+                "direction": pos.get("direction"),
+                "entry": pos.get("entry"),
+                "tp": pos.get("tp"),
+                "sl": pos.get("sl"),
+                "orig_risk": orig_risk,
+                "peak_favorable": peak,
+                "be_moved": be_moved,
+            })
+        except Exception as e:
+            print(f"[EXECUTOR] persist state: {e}")
+
     async def run_be_monitor(self):
+
         """Background loop — checks BE trigger and SL presence on all open
         positions every 10s. Runs unconditionally regardless of mode/pause:
         those govern whether NEW trades get taken, not whether an already-
@@ -571,6 +620,7 @@ class AutoExecutor:
         and the SL self-heal both, for any position still open at the time."""
         self.running = True
         print("[EXECUTOR] BE monitor started")
+        await self.hydrate_from_db()
         while self.running:
             try:
                 self.last_be_check_at = datetime.now(timezone.utc).isoformat()
@@ -594,10 +644,19 @@ class AutoExecutor:
 
                         entry_px = float(p.get("avgPrice") or 0)
                         sl_px = float(p.get("stopLoss") or 0)
+                        tp_px = float(p.get("takeProfit") or 0)
                         if not hasattr(self, "_orig_risk"):
                             self._orig_risk = {}
-                        if symbol not in self._orig_risk and sl_px > 0 and entry_px > 0:
-                            self._orig_risk[symbol] = abs(entry_px - sl_px)
+                        # Capture initial risk once; if SL already at BE after restart,
+                        # recover 1R from TP distance (strategy is 3R target).
+                        if symbol not in self._orig_risk or not self._orig_risk.get(symbol):
+                            risk = 0.0
+                            if sl_px > 0 and entry_px > 0 and abs(sl_px - entry_px) / max(entry_px, 1e-9) > 0.001:
+                                risk = abs(entry_px - sl_px)
+                            elif tp_px > 0 and entry_px > 0:
+                                risk = abs(tp_px - entry_px) / 3.0
+                            if risk > 0:
+                                self._orig_risk[symbol] = risk
                         pos = {
                             "symbol":      symbol,
                             "direction":   direction,
@@ -605,12 +664,20 @@ class AutoExecutor:
                             "current":     current,
                             "peak":        peak,
                             "sl":          sl_px,
+                            "tp":          tp_px,
                             "orig_risk":   self._orig_risk.get(symbol, 0),
                             "positionIdx": int(p.get("positionIdx", 0)),
                         }
                         if pos["sl"] == 0:
                             pos["sl"] = await self._ensure_position_protected(pos)
                         await self.update_break_even(pos)
+                        # Persist every cycle so deploys keep BE monitoring state
+                        be_moved = hasattr(self, "_be_done") and symbol in self._be_done
+                        if not be_moved and entry_px and sl_px and abs(sl_px - entry_px) / max(entry_px, 1e-9) < 0.002:
+                            be_moved = True
+                        await self._persist_position_state(
+                            pos, peak, self._orig_risk.get(symbol, 0), be_moved=be_moved
+                        )
                     signal_engine.clear_executed_if_closed(open_symbols)
                     # Drop peak tracking for anything no longer open, so the
                     # next trade on that symbol starts with a clean slate
@@ -620,6 +687,12 @@ class AutoExecutor:
                             del self.peak_favorable[sym]
                             if hasattr(self, "_orig_risk") and sym in self._orig_risk:
                                 del self._orig_risk[sym]
+                            if hasattr(self, "_be_done") and sym in self._be_done:
+                                self._be_done.discard(sym)
+                            try:
+                                await db.clear_position_state(sym)
+                            except Exception:
+                                pass
             except Exception as e:
                 print(f"[EXECUTOR] BE monitor error: {e}")
             # 10s, down from 30s -- this loop only fetches one lightweight

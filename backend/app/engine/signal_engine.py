@@ -6,14 +6,19 @@ XRPUSDT only. Validated config (Jan–Jun 2026 1H backtest):
   Skip when ATR% > 60th percentile of trailing 720h
 """
 
+from __future__ import annotations
+
 import asyncio
+import uuid
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from typing import Optional
+
 import httpx
 import numpy as np
-import uuid
-from datetime import datetime, timezone
-from app import telegram_notify
-from dataclasses import dataclass, asdict
-from typing import Optional
+
+from app import db, telegram_notify
+from app.bybit_client import bybit_get
 
 ALL_SYMBOLS = ["XRPUSDT"]
 SYMBOL_DISPLAY = {"XRPUSDT": "XRP/USDT"}
@@ -56,6 +61,10 @@ class Signal:
     expires_at: str
     executed: bool = False
     last_error: str = ""
+
+
+def _raw_symbol(sym: str) -> str:
+    return (sym or "").replace("/", "").upper()
 
 
 async def fetch_candles(symbol: str, interval: str = "60", limit: int = 1000) -> list[dict]:
@@ -129,6 +138,25 @@ def atr_percentile(atr_pct_series: list, lookback: int = VOL_LOOKBACK_H) -> Opti
     return float(sum(1 for v in window if v <= current) / len(window) * 100)
 
 
+async def open_position_symbols() -> set[str]:
+    """Raw symbols (e.g. XRPUSDT) that currently have size > 0."""
+    try:
+        data = await bybit_get(
+            "/v5/position/list",
+            {"category": "linear", "settleCoin": "USDT"},
+        )
+        if data.get("retCode") != 0:
+            return set()
+        out = set()
+        for p in data.get("result", {}).get("list") or []:
+            if float(p.get("size") or 0) > 0:
+                out.add(_raw_symbol(p.get("symbol") or ""))
+        return out
+    except Exception as e:
+        print(f"[ENGINE] open_position_symbols: {e}")
+        return set()
+
+
 async def scan_symbol(symbol: str) -> Optional[Signal]:
     params = STRATEGY_PARAMS[symbol]
     candles = await fetch_candles(symbol, interval="60", limit=1000)
@@ -170,7 +198,6 @@ async def scan_symbol(symbol: str) -> Optional[Signal]:
         return None
 
     direction = "LONG" if triggered_long else "SHORT"
-
     if direction == "LONG":
         sl = price - SL_ATR_MULT * atr
         tp = price + TP_ATR_MULT * atr
@@ -181,7 +208,6 @@ async def scan_symbol(symbol: str) -> Optional[Signal]:
         be = price - BE_TRIGGER_R * SL_ATR_MULT * atr
 
     rr = TP_ATR_MULT / SL_ATR_MULT
-
     print(
         f"[SCAN] {symbol}: {direction} price={price:.4f} trend={trend} "
         f"trigger=({trigger_desc}) SL={sl:.6f} TP={tp:.6f} BE@{BE_TRIGGER_R}R"
@@ -217,7 +243,7 @@ class SignalEngine:
         self.running = False
         self.broadcast_cb = None
         self.last_scan_at = None
-        self.last_scan_result = None  # short summary string
+        self.last_scan_result = None
 
     def set_broadcast(self, cb):
         self.broadcast_cb = cb
@@ -253,7 +279,7 @@ class SignalEngine:
         before = len(self.signals)
         self.signals = [
             s for s in self.signals
-            if not s.executed or s.symbol.replace("/", "") in open_symbols_raw
+            if not s.executed or _raw_symbol(s.symbol) in open_symbols_raw
         ]
         if len(self.signals) != before:
             print(f"[ENGINE] Cleared {before - len(self.signals)} closed position signal(s)")
@@ -267,7 +293,24 @@ class SignalEngine:
         for r in results:
             if isinstance(r, Exception):
                 print(f"[ENGINE] scan error: {r}")
-        new_signals = [r for r in results if isinstance(r, Signal)]
+
+        candidates = [r for r in results if isinstance(r, Signal)]
+        open_syms = await open_position_symbols()
+
+        allowed, blocked = [], []
+        for ns in candidates:
+            if _raw_symbol(ns.symbol) in open_syms:
+                blocked.append(ns)
+            else:
+                allowed.append(ns)
+
+        if blocked:
+            print(
+                f"[ENGINE] Suppressing {len(blocked)} signal(s) for open position(s) "
+                f"{[_raw_symbol(s.symbol) for s in blocked]} — no Telegram until flat"
+            )
+
+        new_signals = allowed
         existing = {s.symbol for s in new_signals}
         self.signals = [
             s for s in self.signals
@@ -276,11 +319,25 @@ class SignalEngine:
             ns for ns in new_signals
             if not any(s.symbol == ns.symbol and s.executed for s in self.signals)
         ]
+        # Drop idle signals for pairs that are already in a trade
+        self.signals = [
+            s for s in self.signals
+            if s.executed or _raw_symbol(s.symbol) not in open_syms
+        ]
+
         print(f"[ENGINE] {len(new_signals)} new | {len(self.signals)} active")
         self.last_scan_at = datetime.now(timezone.utc).isoformat()
         self.last_scan_result = f"{len(new_signals)} new, {len(self.signals)} active"
 
         for ns in new_signals:
+            try:
+                await db.save_signal(asdict(ns))
+            except Exception as e:
+                print(f"[ENGINE] save_signal: {e}")
+            # Telegram only when flat on that pair (already filtered; re-check)
+            if _raw_symbol(ns.symbol) in open_syms:
+                print(f"[ENGINE] skip Telegram {_raw_symbol(ns.symbol)}: position open")
+                continue
             try:
                 await telegram_notify.notify_signal(asdict(ns))
             except Exception as e:
@@ -296,6 +353,29 @@ class SignalEngine:
     async def run(self):
         self.running = True
         print("[ENGINE] Started — XRPUSDT only | SL 1.5×ATR | TP 4.5×ATR | BE @ 2.0R")
+        try:
+            rows = await db.load_recent_signals(30)
+            restored = []
+            for raw in rows:
+                if not raw or raw.get("executed"):
+                    continue
+                if raw.get("status") not in (None, "ACTIVE"):
+                    continue
+                try:
+                    restored.append(
+                        Signal(**{k: raw[k] for k in Signal.__dataclass_fields__ if k in raw})
+                    )
+                except Exception:
+                    continue
+            if restored:
+                by_sym = {}
+                for s in restored:
+                    by_sym[s.symbol] = s
+                self.signals = list(by_sym.values())
+                print(f"[ENGINE] Restored {len(self.signals)} signal(s) from DB")
+        except Exception as e:
+            print(f"[ENGINE] restore signals: {e}")
+
         while self.running:
             try:
                 await self.scan_all()

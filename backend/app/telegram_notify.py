@@ -2,11 +2,11 @@
 Telegram signal / trade alerts.
 
 Fly secrets:
-  TELEGRAM_BOT_TOKEN=123456:ABC...
-  TELEGRAM_CHAT_ID=123456789   (or -100... for groups)
+  TELEGRAM_BOT_TOKEN=...
+  TELEGRAM_CHAT_ID=...
 
-Create bot via @BotFather, then message the bot once, get chat id via
-  https://api.telegram.org/bot<TOKEN>/getUpdates
+Rule: no new *signal* alerts for a symbol that already has an open position.
+Order-filled alerts are still allowed (they confirm the trade).
 """
 
 from __future__ import annotations
@@ -20,8 +20,10 @@ _last_signal_ids: set[str] = set()
 
 
 def enabled() -> bool:
-    return bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-                and (os.getenv("TELEGRAM_CHAT_ID") or "").strip())
+    return bool(
+        (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        and (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    )
 
 
 async def send_message(text: str, parse_mode: str = "HTML") -> bool:
@@ -49,10 +51,38 @@ async def send_message(text: str, parse_mode: str = "HTML") -> bool:
         return False
 
 
+async def _symbol_has_open_position(symbol: str) -> bool:
+    """True if Bybit reports size > 0 for this linear symbol."""
+    try:
+        from app.bybit_client import bybit_get
+        raw = str(symbol or "").replace("/", "").upper()
+        data = await bybit_get(
+            "/v5/position/list",
+            {"category": "linear", "symbol": raw, "settleCoin": "USDT"},
+        )
+        if data.get("retCode") != 0:
+            return False
+        for p in data.get("result", {}).get("list") or []:
+            if str(p.get("symbol") or "").replace("/", "").upper() != raw:
+                continue
+            if float(p.get("size") or 0) > 0:
+                return True
+        return False
+    except Exception as e:
+        print(f"[TELEGRAM] open-position check: {e}")
+        return False
+
+
 async def notify_signal(sig: dict) -> None:
-    """Alert on a new strategy signal (deduped by id)."""
+    """Alert on a new strategy signal — skipped if that pair is already in a trade."""
     if not enabled():
         return
+
+    symbol = sig.get("symbol") or "XRPUSDT"
+    if await _symbol_has_open_position(symbol):
+        print(f"[TELEGRAM] skip signal for {symbol}: position already open")
+        return
+
     sid = str(sig.get("id") or "")
     if sid and sid in _last_signal_ids:
         return
@@ -62,7 +92,6 @@ async def notify_signal(sig: dict) -> None:
             _last_signal_ids.clear()
 
     direction = sig.get("direction") or "?"
-    symbol = sig.get("symbol") or "XRPUSDT"
     entry = sig.get("entry")
     tp = sig.get("tp")
     sl = sig.get("sl")
@@ -81,7 +110,7 @@ async def notify_signal(sig: dict) -> None:
     )
     if trend or trigger:
         text += f"Trend: {trend} · Trigger: {trigger}\n"
-    text += f"Mode: signal ready"
+    text += "Mode: signal ready"
     ok = await send_message(text)
     if ok:
         print(f"[TELEGRAM] signal sent {direction} {symbol}")
