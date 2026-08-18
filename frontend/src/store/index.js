@@ -51,9 +51,28 @@ export const useStore = create(
         settings: { ...DEFAULT_SETTINGS, ...state.settings, ...updates }
       })),
 
-      refreshPositions: (positions) => {
-        const list = positions || []
-        const openPnl = list.reduce((s, p) => s + (Number(p.pnl) || 0), 0)
+      refreshPositions: (positions, meta = {}) => {
+        // On API error (ok === false), keep last snapshot so size/lev do not flash empty
+        if (meta.ok === false) return
+        const prev = get().positions || []
+        const list = (positions || []).map((p) => {
+          const id = p.id || p.symbol
+          const old = prev.find((x) => (x.id || x.symbol) === id)
+          // Lock size & leverage from first good snapshot; only refresh PnL/mark/RR/SL
+          const size = (old && old.size > 0) ? old.size : Number(p.size) || 0
+          const leverage = (old && old.leverage > 0)
+            ? old.leverage
+            : (Number(p.leverage) || null)
+          const riskPx = (old && old.riskPx > 0) ? old.riskPx : Number(p.riskPx) || 0
+          return {
+            ...p,
+            size,
+            leverage,
+            riskPx,
+            entry: Number(p.entry) || old?.entry || 0,
+          }
+        })
+        const openPnl = list.reduce((s, pos) => s + (Number(pos.pnl) || 0), 0)
         set({ positions: list, openPnl })
       },
       refreshSignals: (signals) => set({ signals: signals || [] }),

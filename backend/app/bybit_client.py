@@ -170,3 +170,15 @@ def is_today_utc(ts_str) -> bool:
         return d == datetime.utcnow().date()
     except (TypeError, ValueError):
         return False
+
+
+async def fetch_closed_pnl(symbol: str = "XRPUSDT", limit: int = 50) -> list:
+    """Realized PnL rows from Bybit (authoritative closedPnl)."""
+    data = await bybit_get(
+        "/v5/position/closed-pnl",
+        {"category": "linear", "symbol": symbol, "limit": str(limit)},
+    )
+    if data.get("retCode") != 0:
+        print(f"[BYBIT] closed-pnl: {data.get('retMsg')}")
+        return []
+    return data.get("result", {}).get("list") or []

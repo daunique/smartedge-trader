@@ -77,8 +77,9 @@ export function useLiveData() {
     if (!mountedRef.current) return
 
     setBackendConnected(!!portfolio || !!positions)
-    if (portfolio) refreshPortfolio(portfolio)
-    if (positions?.positions) refreshPositions(positions.positions)
+    if (portfolio && portfolio.source !== 'error') refreshPortfolio(portfolio)
+    if (positions?.positions) refreshPositions(positions.positions, { ok: positions.ok !== false })
+    else if (positions && positions.ok === false) refreshPositions([], { ok: false })
     if (history?.trades) refreshHistory(history.trades.map(normalizeTrade))
     if (signals?.signals) {
       const normalized = signals.signals.map(normalizeSignal)

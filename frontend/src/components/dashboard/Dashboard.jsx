@@ -77,13 +77,33 @@ function PosRow({ p, liveMark }) {
   const closeInStore = useStore(s => s.closePosition)
   const [busy, setBusy] = useState(false)
   const long = p.direction === 'LONG'
-  const mark = liveMark != null ? Number(liveMark) : Number(p.current)
+  // Prefer Bybit mark on the position (same venue as fill); public feed only as fallback
+  const bybitMark = Number(p.current) || 0
+  const feedMark = liveMark != null ? Number(liveMark) : 0
+  const mark = bybitMark > 0 ? bybitMark : feedMark
   const entry = Number(p.entry) || 0
   const size = Number(p.size) || 0
-  const livePnl = (entry && size && mark)
-    ? (long ? (mark - entry) : (entry - mark)) * size
-    : Number(p.pnl || 0)
-  const rr = Math.min(100, Math.max(0, ((p.rrAchieved || 0) / 3) * 100))
+  const lev = p.leverage != null && Number(p.leverage) > 0 ? Number(p.leverage) : null
+  // Bybit unrealisedPnl is authoritative (includes fee accrual rules). Recompute
+  // from mark only when we have size/entry — linear USDT: pnl = size * delta.
+  const apiPnl = Number(p.pnl)
+  let livePnl = apiPnl
+  if (entry > 0 && size > 0 && mark > 0) {
+    const raw = (long ? (mark - entry) : (entry - mark)) * size
+    // If API pnl is missing/zero but price moved, use raw; else prefer API
+    if (!Number.isFinite(apiPnl) || (Math.abs(apiPnl) < 1e-8 && Math.abs(raw) > 1e-6)) {
+      livePnl = raw
+    } else {
+      livePnl = apiPnl
+    }
+  }
+  // Stable 1R: prefer server riskPx (TP/3), never use |entry-sl| after BE
+  let riskPx = Number(p.riskPx) || 0
+  if (riskPx <= 0 && p.tp && entry) riskPx = Math.abs(Number(p.tp) - entry) / 3
+  if (riskPx <= 0 && entry) riskPx = entry * 0.01
+  const move = mark && entry ? (long ? (mark - entry) : (entry - mark)) : 0
+  const rrAchieved = riskPx > 0 ? move / riskPx : Number(p.rrAchieved) || 0
+  const rrPct = Math.min(100, Math.max(0, (rrAchieved / 3) * 100))
   const be = p.status === 'BE' || (p.sl && entry && Math.abs(Number(p.sl) - entry) / entry < 0.002)
 
   const onClose = async () => {
@@ -112,7 +132,7 @@ function PosRow({ p, liveMark }) {
             )}
           </div>
           <div className="text-[10px] text-[#848E9C] mt-1 mono tabular-nums">
-            Size {size} · Lev {p.leverage || '—'}×
+            Size {size} · Lev {lev != null ? lev.toFixed(1) : '—'}×
           </div>
         </div>
         <div className="text-right shrink-0">
@@ -143,12 +163,12 @@ function PosRow({ p, liveMark }) {
       <div>
         <div className="flex justify-between text-[10px] text-[#848E9C] mb-1">
           <span>Progress to 3R</span>
-          <span className="mono">{(p.rrAchieved || 0).toFixed(2)}R</span>
+          <span className="mono tabular-nums">{rrAchieved.toFixed(2)}R</span>
         </div>
         <div className="h-1.5 rounded-full bg-[#1E2329] overflow-hidden">
           <div
             className={clsx('h-full rounded-full transition-all', livePnl >= 0 ? 'bg-[#0ECB81]' : 'bg-[#F6465D]')}
-            style={{ width: `${rr}%` }}
+            style={{ width: `${rrPct}%` }}
           />
         </div>
       </div>
@@ -175,7 +195,11 @@ export default function Dashboard() {
   const bal = Number(portfolioBalance || 0)
   const dPnl = Number(dailyPnl || 0)
   const dPct = Number(dailyPnlPct || 0)
-  const oPnl = Number(openPnl || 0)
+  const oPnl = useMemo(() => {
+    const list = positions || []
+    if (!list.length) return Number(openPnl || 0)
+    return list.reduce((s, pos) => s + (Number(pos.pnl) || 0), 0)
+  }, [positions, openPnl])
   const wPnl = Number(weeklyPnl || 0)
 
   const recent = useMemo(() => {

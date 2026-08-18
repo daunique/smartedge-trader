@@ -20,7 +20,7 @@ from app import db
 from app import telegram_notify
 from app.bybit_client import (
     DEMO_BASE, get_base, get_api_key, bybit_get, bybit_post,
-    get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc,
+    get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc, fetch_closed_pnl,
 )
 from dataclasses import asdict
 
@@ -235,19 +235,22 @@ async def get_portfolio():
         equity = float(acc.get("totalEquity") or 0)
         free   = float(acc.get("totalAvailableBalance") or 0)
 
-        # Daily P&L from closed orders (not transaction log)
-        orders_data = await bybit_get("/v5/order/history",
-                                      {"category": "linear", "limit": "50"})
-        daily_pnl        = 0.0
+        # Daily realized PnL from closed-pnl (accurate $ vs order-history fees)
+        daily_pnl = 0.0
         trades_today_count = 0
-        if orders_data.get("retCode") == 0:
-            for o in orders_data["result"].get("list", []):
-                if o.get("symbol") != "XRPUSDT":
+        try:
+            closed_rows = await fetch_closed_pnl("XRPUSDT", 50)
+            for row in closed_rows:
+                created = row.get("createdTime") or row.get("updatedTime") or "0"
+                if not is_today_utc(created):
                     continue
-                created = o.get("createdTime") or "0"
-                if is_today_utc(created) and o.get("orderStatus") in ("Filled", "PartiallyFilled") and is_closing_order(o):
-                    trades_today_count += 1
-                    daily_pnl += get_order_pnl(o)
+                trades_today_count += 1
+                try:
+                    daily_pnl += float(row.get("closedPnl") or 0)
+                except (TypeError, ValueError):
+                    pass
+        except Exception as _e:
+            print(f"[PORTFOLIO] closed-pnl fallback: {_e}")
 
         # Sync executor
         auto_executor.trades_today = trades_today_count
@@ -274,41 +277,85 @@ async def get_portfolio():
 
 @app.get("/api/positions")
 async def get_positions():
+    """Stable open-position payload for the dashboard.
+    R is measured vs initial stop distance (or TP/3 if SL already at BE)
+    so progress does not explode when break-even is hit."""
     try:
         data = await bybit_get("/v5/position/list",
                                {"category": "linear", "settleCoin": "USDT"})
-        if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
+        if data.get("retCode") != 0:
+            raise Exception(data.get("retMsg"))
         positions = []
         for p in data["result"].get("list", []):
             if p.get("symbol") != "XRPUSDT":
                 continue
             size = float(p.get("size") or 0)
-            if size == 0: continue
-            entry   = float(p.get("avgPrice")      or 0)
-            current = float(p.get("markPrice")     or entry)
-            pnl     = float(p.get("unrealisedPnl") or 0)
-            pct     = (pnl / (entry * size)) * 100 if entry and size else 0
-            sl      = float(p.get("stopLoss")  or 0)
-            risk    = abs(entry - sl)
-            rr      = abs(pnl / (risk * size)) if risk and size else 0
+            if size <= 0:
+                continue
+            entry = float(p.get("avgPrice") or 0)
+            current = float(p.get("markPrice") or entry)
+            pnl = float(p.get("unrealisedPnl") or 0)
+            sl = float(p.get("stopLoss") or 0)
+            tp = float(p.get("takeProfit") or 0)
+            lev_raw = p.get("leverage") or p.get("positionIM") or 0
+            try:
+                leverage = float(lev_raw) if lev_raw not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                leverage = 0.0
+            # Position value / IM as fallback leverage estimate
+            if leverage <= 0 and entry and size:
+                im = float(p.get("positionIM") or p.get("positionIMByMp") or 0)
+                if im > 0:
+                    leverage = round((entry * size) / im, 2)
+
+            # Stable 1R distance: prefer distance to TP scaled by strategy 3R,
+            # else |entry-sl| when SL is still away from entry
+            risk_px = 0.0
+            if tp > 0 and entry > 0:
+                risk_px = abs(tp - entry) / 3.0
+            if risk_px <= 0 and sl > 0 and entry > 0:
+                risk_px = abs(entry - sl)
+            if risk_px <= 0 and entry > 0:
+                risk_px = entry * 0.01  # last-resort 1%
+
+            direction = "LONG" if p.get("side") == "Buy" else "SHORT"
+            # Signed R from mark vs entry
+            move = (current - entry) if direction == "LONG" else (entry - current)
+            rr = move / risk_px if risk_px > 0 else 0.0
+
+            be_active = entry > 0 and sl > 0 and abs(sl - entry) / entry < 0.002
+            margin = float(p.get("positionIM") or p.get("positionIMByMp") or 0)
+            notional = entry * size if entry and size else 0.0
+            pct = (pnl / margin * 100) if margin > 0 else (
+                (pnl / notional * 100) if notional else 0.0
+            )
+
             positions.append({
-                "id":          p.get("symbol", ""),   # one position per symbol at a time by design -- symbol is the stable, always-unique id (positionIdx is 0 in one-way mode for every position, not a real identifier)
-                "symbol":      p.get("symbol", ""),
-                "direction":   "LONG" if p.get("side") == "Buy" else "SHORT",
-                "entry":       entry, "current": current,
-                "tp":          float(p.get("takeProfit") or 0),
-                "sl":          sl, "be": entry, "size": size,
-                "pnl":         round(pnl, 4),
-                "pnlPct":      round(pct, 4),
-                "status":      "BE" if sl == entry and entry > 0 else "OPEN",
-                "rrAchieved":  round(rr, 2),
-                "market":      "crypto",
-                "openTime":    ts_to_iso(p.get("createdTime") or "0"),
+                "id": p.get("symbol", "XRPUSDT"),
+                "symbol": p.get("symbol", "XRPUSDT"),
+                "direction": direction,
+                "entry": round(entry, 6),
+                "current": round(current, 6),
+                "tp": round(tp, 6),
+                "sl": round(sl, 6),
+                "be": round(entry, 6),
+                "size": round(size, 6),
+                "leverage": round(leverage, 2) if leverage else None,
+                "margin": round(margin, 4),
+                "notional": round(notional, 4),
+                "pnl": round(pnl, 4),
+                "pnlPct": round(pct, 4),
+                "status": "BE" if be_active else "OPEN",
+                "rrAchieved": round(rr, 2),
+                "riskPx": round(risk_px, 8),
+                "market": "crypto",
+                "openTime": ts_to_iso(p.get("createdTime") or "0"),
             })
-        return {"positions": positions, "source": "bybit_demo"}
+        return {"positions": positions, "source": "bybit", "ok": True}
     except Exception as e:
         print(f"[POSITIONS] {e}")
-        return {"positions": [], "source": "error", "error": str(e)}
+        # ok=False so frontend keeps last good snapshot instead of wiping
+        return {"positions": [], "source": "error", "ok": False, "error": str(e)}
 
 @app.get("/api/signals")
 async def get_signals():
@@ -320,72 +367,62 @@ async def get_signals():
 
 @app.get("/api/history")
 async def get_history(limit: int = 100, offset: int = 0):
+    """Closed trades from Bybit closed-pnl (true realized $ PnL)."""
     try:
-        # Bybit v5 order-history pagination is cursor-based, not a simple
-        # numeric offset -- rather than chase cursors, fetch a generous
-        # single batch (200, Bybit's practical per-call ceiling, which
-        # comfortably covers months of this strategy's actual trade volume
-        # at ~1 trade every 1.6-2.3 days) and paginate offset/limit over the
-        # already-fetched list. offset was previously accepted by the
-        # frontend but silently ignored here -- same response every time
-        # regardless of what page was requested.
-        data = await bybit_get("/v5/order/history",
-                               {"category": "linear", "limit": "200"})
-        if data.get("retCode") != 0: raise Exception(data.get("retMsg"))
-
-        trades  = []
+        rows = await fetch_closed_pnl("XRPUSDT", min(limit + offset, 100))
+        # API returns newest first — reverse for running total
+        chronological = list(reversed(rows))
+        built = []
         running = 0.0
-        # Process oldest first for running PnL
-        orders  = list(reversed(data["result"].get("list", [])))
-        for o in orders:
-            if o.get("symbol") != "XRPUSDT":
-                continue
-            if o.get("orderStatus") not in ("Filled", "PartiallyFilled"):
-                continue
-            if not is_closing_order(o):
-                continue  # entry order, not a completed trade -- see is_closing_order
-            pnl      = get_order_pnl(o)
+        for row in chronological:
+            try:
+                pnl = float(row.get("closedPnl") or 0)
+            except (TypeError, ValueError):
+                pnl = 0.0
             running += pnl
-            created  = o.get("createdTime") or o.get("updatedTime") or "0"
-            # Determine TP or SL based on order type
-            stop_order_type = o.get("stopOrderType", "")
-            trigger = o.get("triggerBy", "")
-            if "TakeProfit" in stop_order_type or "tp" in trigger.lower():
+            side = (row.get("side") or "").capitalize()
+            # Bybit closed-pnl: Buy = long position closed, Sell = short closed
+            direction = "LONG" if side == "Buy" else "SHORT"
+            entry = float(row.get("avgEntryPrice") or 0)
+            exit_px = float(row.get("avgExitPrice") or 0)
+            qty = float(row.get("closedSize") or row.get("qty") or 0)
+            created = row.get("createdTime") or row.get("updatedTime") or "0"
+            # Classify exit roughly
+            if pnl > 0.01:
                 status = "TP"
-            elif "StopLoss" in stop_order_type or "sl" in trigger.lower():
+            elif pnl < -0.01:
                 status = "SL"
-            elif pnl > 0:
-                status = "TP"
             else:
-                status = "SL"
-
-            trades.append({
-                "id":         o.get("orderId"),
-                "symbol":     o.get("symbol", ""),
-                "direction":  "LONG" if o.get("side") == "Buy" else "SHORT",
-                "pnl":        round(pnl, 4),
+                status = "BE"
+            built.append({
+                "id": row.get("orderId") or row.get("execId") or f"{created}-{qty}",
+                "symbol": row.get("symbol") or "XRPUSDT",
+                "direction": direction,
+                "entry": round(entry, 6),
+                "exit": round(exit_px, 6),
+                "size": qty,
+                "pnl": round(pnl, 4),
                 "runningPnl": round(running, 4),
-                "status":     status,
-                "rr":         get_order_rr(o),
-                "date":       ts_to_iso(created),
-                "market":     "crypto",
-                "duration":   "—",
+                "status": status,
+                "rr": "—",
+                "date": ts_to_iso(created),
+                "market": "crypto",
+                "duration": "—",
             })
-
-        # Return newest first, then apply the requested page
-        trades.reverse()
-        total = len(trades)
-        trades = trades[offset:offset + min(limit, 200)]
-        # Persist XRP closes into Supabase (best-effort)
+        # newest first for UI
+        built.reverse()
+        total = len(built)
+        trades = built[offset: offset + limit]
         for tr in trades[:20]:
             try:
                 await db.save_trade(tr)
             except Exception:
                 pass
-        return {"trades": trades, "total": total, "source": "bybit_demo"}
+        return {"trades": trades, "total": total, "source": "bybit_closed_pnl", "ok": True}
     except Exception as e:
         print(f"[HISTORY] {e}")
-        return {"trades": [], "total": 0, "source": "error", "error": str(e)}
+        return {"trades": [], "total": 0, "source": "error", "ok": False, "error": str(e)}
+
 
 @app.post("/api/settings")
 async def update_settings(settings: dict):
