@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import Optional
+from app import telegram_notify
 from app.bybit_client import bybit_get, bybit_post, get_order_pnl, is_closing_order, is_today_utc
 from app.engine.signal_engine import (
     fetch_candles, wilder_atr_series, SL_ATR_MULT, ATR_PERIOD, signal_engine,
@@ -301,6 +302,14 @@ class AutoExecutor:
                     "order_link_id": link_id, "msg": "filled",
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
+                try:
+                    await telegram_notify.notify_trade({
+                        "success": True, "symbol": signal.get("symbol"),
+                        "direction": direction, "qty": qty, "entry": entry,
+                        "tp": tp, "sl": sl, "order_id": order_id,
+                    })
+                except Exception as _te:
+                    print(f"[EXECUTOR] telegram: {_te}")
 
                 # Verify SL actually attached rather than assume the
                 # order-create params were honored -- this position is

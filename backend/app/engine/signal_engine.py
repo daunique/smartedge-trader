@@ -11,6 +11,7 @@ import httpx
 import numpy as np
 import uuid
 from datetime import datetime, timezone
+from app import telegram_notify
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -278,6 +279,12 @@ class SignalEngine:
         print(f"[ENGINE] {len(new_signals)} new | {len(self.signals)} active")
         self.last_scan_at = datetime.now(timezone.utc).isoformat()
         self.last_scan_result = f"{len(new_signals)} new, {len(self.signals)} active"
+
+        for ns in new_signals:
+            try:
+                await telegram_notify.notify_signal(asdict(ns))
+            except Exception as e:
+                print(f"[ENGINE] telegram: {e}")
 
         if self.broadcast_cb:
             await self.broadcast_cb({

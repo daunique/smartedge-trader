@@ -83,7 +83,7 @@
   }
   .pos { color: #0ECB81; }
   .neg { color: #F6465D; }
-  .live-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+  .live-dot { animation: none; opacity: 1; }
   .safe-pb { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 }
 

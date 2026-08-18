@@ -54,7 +54,7 @@ function TopBar() {
 
         <div className="flex items-baseline gap-1.5 min-w-0">
           <span className="text-[10px] text-[#848E9C] font-medium">XRP</span>
-          <span className="mono text-[13px] font-semibold text-[#EAECEF] tabular-nums">
+          <span className="mono text-[13px] font-semibold text-[#EAECEF] tabular-nums min-w-[4.5rem]">
             {price != null && Number(price) > 0 ? Number(price).toFixed(4) : '—'}
           </span>
           {change != null && !isNaN(Number(change)) && (
@@ -64,7 +64,7 @@ function TopBar() {
           )}
           {price != null && Number(price) > 0 && (
             <span className="flex items-center gap-1 text-[9px] text-[#0ECB81] font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#0ECB81] live-dot" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0ECB81]" />
               LIVE
             </span>
           )}

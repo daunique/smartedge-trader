@@ -6,7 +6,7 @@ import { priceFeed } from '../services/priceFeed'
 import { notifications } from '../services/notifications'
 
 const CRYPTO_SYMBOLS = ['XRPUSDT']
-const POLL_INTERVAL = 4000
+const POLL_INTERVAL = 5000
 
 const normalizeSignal = (s) => ({
   id: s.id, symbol: s.symbol, direction: s.direction,
@@ -124,7 +124,7 @@ export function useLiveData() {
     })
 
     pollRef.current = setInterval(loadAll, POLL_INTERVAL)
-    priceRef.current = setInterval(loadPrices, 2000)
+    priceRef.current = setInterval(loadPrices, 5000)
 
     wsService.connect({
       onOpen: () => setWsConnected(true),

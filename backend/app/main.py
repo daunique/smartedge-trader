@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from app.engine.signal_engine import signal_engine
 from app.engine.auto_executor import auto_executor
 from app import db
+from app import telegram_notify
 from app.bybit_client import (
     DEMO_BASE, get_base, get_api_key, bybit_get, bybit_post,
     get_order_pnl, get_order_rr, is_closing_order, ts_to_iso, is_today_utc,
@@ -141,6 +142,7 @@ async def keepalive_ping():
 async def lifespan(app: FastAPI):
     print("🚀 SmartEdge Trader backend starting...")
     print(f"   API Key set: {bool(get_api_key())}")
+    print(f"   Telegram: {'on' if telegram_notify.enabled() else 'off'}")
     try:
         pool = await db.get_pool()
         print(f"   Supabase DB: {'connected' if pool else 'not configured / failed'}")
