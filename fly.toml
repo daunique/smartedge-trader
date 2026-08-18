@@ -1,9 +1,6 @@
-# SmartEdge API — Fly.io
-# Deploy from backend/:  fly deploy
-# App name can be changed on first launch.
-
-app = "smartedge-api"
-primary_region = "bom"
+# Region: fra (Frankfurt). Avoid jnb — Bybit CloudFront geo-blocks it.
+app = "smartedge-web"
+primary_region = "fra"
 
 [build]
   dockerfile = "Dockerfile"
@@ -20,15 +17,10 @@ primary_region = "bom"
   min_machines_running = 1
   processes = ["app"]
 
-  [http_service.concurrency]
-    type = "connections"
-    hard_limit = 100
-    soft_limit = 50
-
   [[http_service.checks]]
     interval = "15s"
-    timeout = "5s"
-    grace_period = "20s"
+    timeout = "8s"
+    grace_period = "40s"
     method = "GET"
     path = "/health"
 
