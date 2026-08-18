@@ -28,16 +28,33 @@ load_dotenv()
 
 # ── WebSocket Manager ─────────────────────────────────────────────
 class ConnectionManager:
-    def __init__(self): self.active: list[WebSocket] = []
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
     async def connect(self, ws):
-        await ws.accept(); self.active.append(ws)
+        await ws.accept()
+        if ws not in self.active:
+            self.active.append(ws)
+
     def disconnect(self, ws):
-        if ws in self.active: self.active.remove(ws)
+        try:
+            self.active.remove(ws)
+        except ValueError:
+            pass
+
     async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
-        for ws in self.active[:]:
-            try: await ws.send_text(msg)
-            except: self.active.remove(ws)
+        dead = []
+        for ws in list(self.active):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                self.active.remove(ws)
+            except ValueError:
+                pass
 
 manager = ConnectionManager()
 
@@ -175,6 +192,10 @@ async def root():
     if index.exists():
         return FileResponse(index)
     return {"app": "SmartEdge Trader", "status": "online", "mode": auto_executor.mode}
+
+@app.head("/")
+async def head_root():
+    return Response(status_code=200)
 
 @app.get("/health")
 async def health():

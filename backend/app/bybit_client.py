@@ -1,5 +1,8 @@
 """
 SmartEdge Trader — Bybit REST client (demo / testnet / mainnet).
+
+GET signatures must match the exact query string that is sent.
+httpx can reorder dict params; we build a sorted query string ourselves.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import hashlib
 import time
 import httpx
 from datetime import datetime
+from urllib.parse import urlencode
 
 
 def get_api_key() -> str:
@@ -22,13 +26,6 @@ def get_api_secret() -> str:
 
 
 def get_base() -> str:
-    """
-    Resolve REST host:
-      BYBIT_BASE          — explicit override (full origin, no trailing slash)
-      ACCOUNT_MODE=DEMO   — api-demo.bybit.com  (Bybit Demo Trading)
-      BYBIT_TESTNET=true  — api-testnet.bybit.com
-      else                — api.bybit.com (live)
-    """
     explicit = (os.getenv("BYBIT_BASE") or "").strip().rstrip("/")
     if explicit:
         return explicit
@@ -41,12 +38,19 @@ def get_base() -> str:
     return "https://api.bybit.com"
 
 
-# Back-compat name used by main.py health payload
 DEMO_BASE = "https://api-demo.bybit.com"
 
 
 def _sign(param_str: str) -> str:
     return hmac.new(get_api_secret().encode(), param_str.encode(), hashlib.sha256).hexdigest()
+
+
+def _query_string(params: dict) -> str:
+    """Alphabetical key order — required for Bybit GET sign + request URL."""
+    if not params:
+        return ""
+    items = sorted((str(k), str(v)) for k, v in params.items() if v is not None)
+    return urlencode(items)
 
 
 def _parse_response(r: httpx.Response, path: str) -> dict:
@@ -73,30 +77,31 @@ def _parse_response(r: httpx.Response, path: str) -> dict:
 
 
 async def bybit_get(path: str, params: dict = None) -> dict:
-    params = params or {}
+    params = dict(params or {})
     api_key = get_api_key()
     if not api_key:
         return {"retCode": -1, "retMsg": "BYBIT_API_KEY not set", "result": {}}
     base = get_base()
     ts = str(int(time.time() * 1000))
     recv_window = "20000"
-    param_str = ts + api_key + recv_window + "&".join(
-        f"{k}={v}" for k, v in sorted(params.items())
-    )
+    qs = _query_string(params)
+    # origin = timestamp + api_key + recv_window + queryString
+    origin = f"{ts}{api_key}{recv_window}{qs}"
     headers = {
         "X-BAPI-API-KEY": api_key,
         "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-SIGN": _sign(param_str),
+        "X-BAPI-SIGN": _sign(origin),
         "X-BAPI-RECV-WINDOW": recv_window,
     }
+    url = f"{base}{path}?{qs}" if qs else f"{base}{path}"
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{base}{path}", params=params, headers=headers)
+            r = await client.get(url, headers=headers)
             data = _parse_response(r, path)
-            if data.get("retCode") not in (0, None) and data.get("retCode") != 0:
-                # Log auth/config mistakes once clearly
-                if data.get("retCode") in (10003, 10004, 10005, 33004, -1):
-                    print(f"[BYBIT] GET {path} retCode={data.get('retCode')} retMsg={data.get('retMsg')} base={base}")
+            rc = data.get("retCode")
+            if rc not in (0, None) and rc != 0:
+                if rc in (10003, 10004, 10005, 33004, -1):
+                    print(f"[BYBIT] GET {path} retCode={rc} retMsg={data.get('retMsg')} base={base}")
             return data
     except Exception as e:
         print(f"[BYBIT] GET {path} network error: {e}")
@@ -111,12 +116,13 @@ async def bybit_post(path: str, body: dict = None) -> dict:
     base = get_base()
     ts = str(int(time.time() * 1000))
     recv_window = "20000"
-    body_str = json.dumps(body)
-    param_str = ts + api_key + recv_window + body_str
+    # Compact JSON — must match bytes sent on the wire
+    body_str = json.dumps(body, separators=(",", ":"))
+    origin = f"{ts}{api_key}{recv_window}{body_str}"
     headers = {
         "X-BAPI-API-KEY": api_key,
         "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-SIGN": _sign(param_str),
+        "X-BAPI-SIGN": _sign(origin),
         "X-BAPI-RECV-WINDOW": recv_window,
         "Content-Type": "application/json",
     }
@@ -173,7 +179,6 @@ def is_today_utc(ts_str) -> bool:
 
 
 async def fetch_closed_pnl(symbol: str = "XRPUSDT", limit: int = 50) -> list:
-    """Realized PnL rows from Bybit (authoritative closedPnl)."""
     data = await bybit_get(
         "/v5/position/closed-pnl",
         {"category": "linear", "symbol": symbol, "limit": str(limit)},
