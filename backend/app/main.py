@@ -7,7 +7,7 @@ Live Bybit Demo + Signal Engine + Auto Execution
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio, json, os
@@ -195,6 +195,7 @@ async def root():
 
 @app.head("/")
 async def head_root():
+    """Uptime probes often use HEAD / — must not 500."""
     return Response(status_code=200)
 
 @app.get("/health")
