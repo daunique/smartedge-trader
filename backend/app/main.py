@@ -161,14 +161,14 @@ async def lifespan(app: FastAPI):
     print(f"   API Key set: {bool(get_api_key())}")
     print(f"   Telegram: {'on' if telegram_notify.enabled() else 'off'}")
     try:
-        pool = await db.get_pool()
-        print(f"   Supabase DB: {'connected' if pool else 'not configured / failed'}")
+        # Persistence: in-memory only (Supabase removed)
+        print("   DB: in-memory (no Supabase)")
         stored = await db.load_settings()
         if stored:
             auto_executor.update_settings(stored)
-            print("   Loaded settings from Supabase")
+            print("   Loaded settings from memory")
     except Exception as e:
-        print(f"   Supabase init: {e}")
+        print(f"   DB init: {e}")
     signal_engine.set_broadcast(manager.broadcast)
     auto_executor.set_broadcast(manager.broadcast)
     asyncio.create_task(signal_engine.run())
@@ -238,7 +238,7 @@ async def health():
         "last_be_move_at": getattr(auto_executor, "last_be_move_at", None),
         "last_be_symbol": getattr(auto_executor, "last_be_symbol", None),
         "last_order": getattr(auto_executor, "last_order", None),
-        "supabase": await db.db_status(),
+        "db": await db.db_status(),
     }
 
 @app.get("/api/status")
