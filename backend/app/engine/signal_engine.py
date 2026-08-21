@@ -4,6 +4,7 @@ XRPUSDT only. Validated config (Jan–Jun 2026 1H backtest):
   SMA(50)/SMA(200) trend + body-ratio > 0.789 entry
   SL 1.5×ATR / TP 4.5×ATR / BE at +2.0R
   Skip when ATR% > 60th percentile of trailing 720h
+  3m confluence: RSI(14) momentum — LONG only if RSI>=55, SHORT only if RSI<=45
 """
 
 from __future__ import annotations
@@ -38,6 +39,13 @@ TP_ATR_MULT = 4.5
 BE_TRIGGER_R = 2.0
 VOL_LOOKBACK_H = 720
 VOL_EXCLUDE_ABOVE_PCTL = 60
+
+# 3-minute RSI momentum confluence (backtested overlay)
+RSI_PERIOD = 14
+RSI_MOMENTUM_LONG = 55.0   # long only if 3m RSI >= this
+RSI_MOMENTUM_SHORT = 45.0  # short only if 3m RSI <= this
+M3_INTERVAL = "3"
+M3_CANDLE_LIMIT = 100
 
 
 @dataclass
@@ -138,6 +146,52 @@ def atr_percentile(atr_pct_series: list, lookback: int = VOL_LOOKBACK_H) -> Opti
     return float(sum(1 for v in window if v <= current) / len(window) * 100)
 
 
+
+def rsi_wilder(closes: list[float], period: int = RSI_PERIOD) -> Optional[float]:
+    """Wilder-style RSI on close series; returns latest value or None."""
+    if len(closes) < period + 2:
+        return None
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    if len(gains) < period:
+        return None
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss <= 1e-12:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
+async def m3_rsi_momentum_ok(symbol: str, direction: str) -> tuple[bool, Optional[float], str]:
+    """
+    3m RSI momentum confluence.
+    LONG requires RSI >= 55; SHORT requires RSI <= 45.
+    Returns (ok, rsi_value, reason_string).
+    """
+    candles = await fetch_candles(symbol, interval=M3_INTERVAL, limit=M3_CANDLE_LIMIT)
+    if len(candles) < RSI_PERIOD + 5:
+        return False, None, f"3m RSI: insufficient candles ({len(candles)})"
+    closes = [c["close"] for c in candles]
+    rsi = rsi_wilder(closes, RSI_PERIOD)
+    if rsi is None:
+        return False, None, "3m RSI: compute failed"
+    if direction == "LONG":
+        ok = rsi >= RSI_MOMENTUM_LONG
+        why = f"3m RSI={rsi:.1f} {'>=' if ok else '<'} {RSI_MOMENTUM_LONG:.0f}"
+        return ok, rsi, why
+    ok = rsi <= RSI_MOMENTUM_SHORT
+    why = f"3m RSI={rsi:.1f} {'<=' if ok else '>'} {RSI_MOMENTUM_SHORT:.0f}"
+    return ok, rsi, why
+
+
 async def open_position_symbols() -> set[str]:
     """Raw symbols (e.g. XRPUSDT) that currently have size > 0."""
     try:
@@ -198,6 +252,16 @@ async def scan_symbol(symbol: str) -> Optional[Signal]:
         return None
 
     direction = "LONG" if triggered_long else "SHORT"
+
+    # --- 3m RSI momentum confluence ---
+    m3_ok, m3_rsi, m3_why = await m3_rsi_momentum_ok(symbol, direction)
+    if not m3_ok:
+        print(
+            f"[SCAN] {symbol}: {direction} blocked by 3m confluence — {m3_why}"
+        )
+        return None
+    trigger_desc = f"{trigger_desc} | {m3_why}"
+
     if direction == "LONG":
         sl = price - SL_ATR_MULT * atr
         tp = price + TP_ATR_MULT * atr
@@ -352,7 +416,7 @@ class SignalEngine:
 
     async def run(self):
         self.running = True
-        print("[ENGINE] Started — XRPUSDT only | SL 1.5×ATR | TP 4.5×ATR | BE @ 2.0R")
+        print("[ENGINE] Started — XRPUSDT 1H + 3m RSI momentum | SL 1.5×ATR | TP 4.5×ATR | BE @ 2.0R")
         try:
             rows = await db.load_recent_signals(30)
             restored = []
