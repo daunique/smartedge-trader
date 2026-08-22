@@ -1,9 +1,10 @@
 """
-SmartEdge Trader — Signal Engine
-XRPUSDT only. Validated config (Jan–Jun 2026 1H backtest):
+SmartEdge Trader — Signal Engine (Apex XRP)
+XRPUSDT only. Apex config (Jan–Jun 2026 1H backtest, $50 path confirmed):
   SMA(50)/SMA(200) trend + body-ratio > 0.789 entry
   SL 1.5×ATR / TP 4.5×ATR / BE at +2.0R
-  Skip when ATR% > 60th percentile of trailing 720h
+  Skip when ATR% > 55th percentile of trailing 720h
+  1H RSI(14) exhaustion: no LONG if RSI > 80, no SHORT if RSI < 20
   3m confluence: RSI(14) momentum — LONG only if RSI>=55, SHORT only if RSI<=45
 """
 
@@ -38,7 +39,11 @@ SL_ATR_MULT = 1.5
 TP_ATR_MULT = 4.5
 BE_TRIGGER_R = 2.0
 VOL_LOOKBACK_H = 720
-VOL_EXCLUDE_ABOVE_PCTL = 60
+VOL_EXCLUDE_ABOVE_PCTL = 55  # Apex: was 60
+
+# Apex 1H RSI exhaustion filter
+RSI_EXHAUST_LONG_MAX = 80.0   # no LONG if 1H RSI > this
+RSI_EXHAUST_SHORT_MIN = 20.0  # no SHORT if 1H RSI < this
 
 # 3-minute RSI momentum confluence (backtested overlay)
 RSI_PERIOD = 14
@@ -253,6 +258,25 @@ async def scan_symbol(symbol: str) -> Optional[Signal]:
 
     direction = "LONG" if triggered_long else "SHORT"
 
+    # --- Apex 1H RSI exhaustion ---
+    rsi_1h = rsi_wilder(closes, RSI_PERIOD)
+    if rsi_1h is not None:
+        if direction == "LONG" and rsi_1h > RSI_EXHAUST_LONG_MAX:
+            print(
+                f"[SCAN] {symbol}: LONG blocked by Apex RSI exhaustion — "
+                f"1H RSI={rsi_1h:.1f} > {RSI_EXHAUST_LONG_MAX:.0f}"
+            )
+            return None
+        if direction == "SHORT" and rsi_1h < RSI_EXHAUST_SHORT_MIN:
+            print(
+                f"[SCAN] {symbol}: SHORT blocked by Apex RSI exhaustion — "
+                f"1H RSI={rsi_1h:.1f} < {RSI_EXHAUST_SHORT_MIN:.0f}"
+            )
+            return None
+        trigger_desc = f"{trigger_desc} | 1H RSI={rsi_1h:.1f}"
+    else:
+        print(f"[SCAN] {symbol}: 1H RSI unavailable — skip exhaustion check")
+
     # --- 3m RSI momentum confluence ---
     m3_ok, m3_rsi, m3_why = await m3_rsi_momentum_ok(symbol, direction)
     if not m3_ok:
@@ -416,7 +440,7 @@ class SignalEngine:
 
     async def run(self):
         self.running = True
-        print("[ENGINE] Started — XRPUSDT 1H + 3m RSI momentum | SL 1.5×ATR | TP 4.5×ATR | BE @ 2.0R")
+        print("[ENGINE] Started — Apex XRP | vol≤55 | 1H RSI 80/20 | 3m RSI mom | SL 1.5×ATR | TP 4.5×ATR | BE @ 2.0R")
         try:
             rows = await db.load_recent_signals(30)
             restored = []
